@@ -1,0 +1,1106 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this project adheres
+to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- **Auto mode.** A fifth stock mode between Build and YOLO: Build, but what
+  Build would ask you about (a bash escape, a file tool outside the project,
+  a host outside the allowlist, a web search, a first-use tool or skill) is
+  judged by a classifier, a small side call to a model, against what you
+  asked for in this session. The judge sees your own messages, the approved
+  plan, the boundary, the agent's recent tool calls and the action as data;
+  never the agent's reasoning or a tool result. It answers two scores,
+  `risk` and `authorization`, and the mode's `strictness` decides what
+  passes; a hard floor (credentials, exfiltration, pipe-to-shell, force
+  push, this extension's own configuration) never passes, and deterministic
+  pre-checks refuse the obvious cases without a call (with `onRefuse:
+  "ask"` they reach you as a prompt). Every verdict is shown in the
+  conversation right after the tool call, a green check mark or a red
+  cross, folded like tool output (click or ctrl+o expands it; verdicts
+  with one outcome in a turn share a line), visible to you and not to the
+  model; `/perm verdicts` lists them, `<scratch>/verdicts.log` keeps
+  them. A refusal is final for the
+  session until you say otherwise in chat; a classifier failure refuses with
+  its own message; three refusals in a row or twenty in a session hand the
+  asks back to you. Network verdicts are per command. The judge asks for no
+  reasoning; a model that reasons anyway is probed once for an off switch
+  (pi's `thinkingFormat` parameters, then the Qwen `/no_think` text
+  switch), the first that works is remembered in
+  `permission-mode/state.json`, none working is a warning to pick another
+  model. The `classifier` block
+  (`model`, `strictness`, `onRefuse`, `guidance`, `restrict`) works on any
+  mode; a project config may only tighten it. `docs/modes.md`, "Auto mode".
+- Mode colors `warning` and `success` for `color`.
+
+### Changed
+- The stock `cycleOrder` is `default, plan, build, auto, yolo`. A global
+  config that pins its own order keeps it; the defaults audit names the
+  change once.
+
+### Fixed
+
+- A bash argument that starts with a dash but is no flag (an echo label
+  such as `--- which node/npm ---`) was read as a flag with a glued path
+  (`/npm`) and prompted as a path outside the project. Only a flag-shaped
+  token (`-C/etc`, `-I/usr/include`) carries a glued path now.
+
+## [2.7.2]
+
+### Changed
+- **Package description and demo video.** The npm description (the intro on
+  pi.dev) describes 2.7 instead of 2.1; the demo video shows a Plan Mode
+  round trip, a background shell with its link, and a refused read outside
+  the project.
+- The README screenshot shows the out-of-project prompt.
+
+## [2.7.1]
+
+### Changed
+- **README restructured for new users.** Quick start, Verify and Install
+  lead; the intro says what the extension is and names the three supported
+  platforms; a screenshot; the configuration example shrinks to one
+  redefined mode. The reference stays in `docs/`.
+- `docs/shells.md` and the relay source name the upstream request for port
+  relaying in the runtime,
+  [anthropics/sandbox-runtime#784](https://github.com/anthropics/sandbox-runtime/issues/784).
+- CI runs on `dev` as well as `main` and tests through `npm test`, so the
+  shells tests run there too.
+
+## [2.7.0]
+
+### Added
+- **Background shells: bash with `run_in_background: true`.** A dev server,
+  a watcher, a long build or a monitor runs as its own process tree that
+  outlives the call, under the same sandbox, the same policy gate and the
+  same prompts as a foreground command ("Run in background?" names it).
+  The call returns within half a second with the shell's id and log path, or
+  with the exit code when the command ended at once. The model reads it with
+  `bash_output` (status plus the output since its last read; `wait_seconds`
+  blocks until new output or the end; `filter`; sandbox violations of the
+  shell appended) and stops it with `kill_shell`, choosing the signal (TERM,
+  INT, HUP, KILL) and the grace before SIGKILL; on Windows the stop is
+  forced, and the tool says so. When a shell ends by itself the model is
+  told, per `shells.notify`: a turn of its own (`wake`, the default), a note
+  in the next turn (`note`), or nothing (`none`). `/shells` lists, stops,
+  reads and cleans up; the footer shows `Shells: N`. A shell keeps the
+  sandbox it started with (an in-place mode switch does not touch it) and
+  its launch allowlist (registered with the runtime under its own id). On
+  Linux, where the sandbox has a loopback of its own, bash's `expose`
+  parameter relays ports of this machine into the shell (`[5173]` for
+  127.0.0.1, `["0.0.0.0:5173"]` for every interface after one question),
+  and the model's own foreground commands reach an exposed port too, for as
+  long as that shell runs (a listener inside each command hands connections
+  into the shell; nothing is granted, nothing to revoke); elsewhere a server
+  in the shell is reachable as it binds. A
+  switch that must restart the runtime (Windows: every change; elsewhere
+  between a filtered and an unfiltered network) asks before it stops them;
+  No keeps the mode. `/reload` keeps them: the new extension instance
+  takes over the shells and the runtime they run under, and a changed
+  profile waits until the last shell ends (the footer and `/sandbox` say
+  so; `/shells stop all` applies it now). Otherwise shells end with the
+  session. Config block `shells` (`enabled`, `maxConcurrent`, `notify`); a
+  project may only tighten. Documented in `docs/shells.md`.
+
+### Changed
+- **The mode text is written as pi prompt sections instead of replacing the
+  system prompt.** The sandbox awareness block, the docs pointer and a mode's
+  own `systemPrompt` become the sections `permission_mode`,
+  `permission_mode_docs` and `permission_mode_steering`. pi records them in
+  the session and, on models that accept mid-conversation system messages
+  (pi 0.86 or newer; the catalog entries of Anthropic, OpenAI, OpenRouter and
+  others; custom endpoints with `compat.supportsMidConvoSystemMessages`), a
+  mode switch, a network grant or a blocked path now sends a short patch
+  after the conversation instead of rewriting its head, so the provider's
+  prompt cache keeps the whole context. Other models and older pi versions
+  behave as before. Idea from [#9](https://github.com/wynainfo/pi-permission-modes/pull/9)
+  by [@ammoniak](https://github.com/ammoniak).
+
+## [2.6.0]
+
+### Added
+- **Windows: the sandboxed modes contain bash on native Windows (alpha).**
+  The runtime's Windows backend runs each command as a separate local
+  account (`srt-sandbox`) in Git Bash, behind a firewall rule keyed on that
+  account; the mode's profile becomes NTFS permission entries for it. One
+  elevated `/sandbox install` per machine (`/sandbox uninstall` removes it).
+  Reads are what the profile grants there: the stock profiles grant the
+  project and the per-user tool roots that exist on the machine (per-user
+  Python, Git, npm, pnpm, fnm, Scoop, WinGet and friends), nothing else of
+  the profile unless the install's profile read grant makes it readable
+  minus the credential stores (asked at `/sandbox install`, see the
+  runtime entry below), so the credential list holds by construction; a
+  mode's own `allowRead` replaces that list. Before
+  trusting the sandbox the extension probes the project's parent and the
+  drive root from inside it and prompts instead when they are writable (a
+  folder created at a drive root grants every local user Modify; a project
+  inside another pi session's project is named as such, the two share the
+  sandbox account). Plan mode re-initializes the runtime read-only on the
+  switch (grants are stamped at initialize time there, which takes a
+  moment), so a switch starts one quiet second after the last cycle step
+  and cycling pays for the last mode only. The sandboxed command gets your
+  shell environment minus identity, path, temp, proxy and CA variables,
+  your global git config (a copy, as `GIT_CONFIG_GLOBAL`) and identity, and
+  `TMPDIR`, `TEMP`, `TMP` pointing at the scratch directory; git sends its proxy credentials up front, never waits on a
+  credential prompt, and, with cargo, skips the revocation check that
+  cannot leave the fence. The bash escape heuristic understands Windows
+  paths (`C:\`, `/c/`, `%VAR%`, UNC), PowerShell and cmd script arguments,
+  and `runas` / `gsudo`; Git Bash's `/tmp` is not an escape. Limits, the runtime's: per-user tool
+  installs need the profile read grant or a tool root, mapped-drive and
+  UNC projects are refused, DNS is not fenced, Schannel clients (curl in
+  both builds, PowerShell, .NET) cannot do TLS inside the sandbox
+  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). Built on the work
+  of [@ammoniak](https://github.com/ammoniak) in
+  [#9](https://github.com/wynainfo/pi-permission-modes/pull/9): the path
+  heuristics, the Git Bash lookup, the staged helper and the self-check
+  come from there.
+- **A GitHub token in pi's environment is all git needs.** With
+  `GITHUB_TOKEN` (or `GH_TOKEN`) set when pi starts, every command the
+  extension runs, sandboxed or not, carries a credential helper for
+  github.com that hands git the token when it asks, so a private
+  repository clones, fetches and pushes without a git config change; a
+  credential manager that cannot prompt in the sandbox is no longer
+  consulted ahead of it. The token stays in the environment: never on a
+  command line, never in a file. When git still cannot authenticate, the
+  model is told to stop and offer the user the choice between that token
+  and one-off `!git clone` / `!git push` steps on the host, and never to ask
+  for the token in chat ([docs/network.md, Git authentication](docs/network.md#git-authentication)).
+- **`sandbox.allowLocalBinding`: a server a sandboxed command starts is
+  reachable from this machine.** One top-level key with one meaning on
+  every platform: a sandboxed command may listen on a local port and this
+  machine may connect to it while the command runs (a dev server under
+  test, a preview in the browser); the command's end closes it. On by
+  default; a project config may set it to `false`, never back to `true`.
+  Configs from 2.5.0 that spell it `sandbox.macos.allowLocalBinding` keep
+  working (the top-level value wins when both are set).
+  On macOS it maps to the runtime's `network.allowLocalBinding`, which also
+  lets sandboxed bash reach loopback services directly (database drivers,
+  `psql`), past the proxy and its prompt: the profile otherwise allows
+  direct TCP only to the proxy, so no allowlist entry could help. On
+  Windows loopback is an install-time mode of the firewall set:
+  `/sandbox install` opens it unless every sandboxed mode sets the key to
+  `false`, the install's mode is what every session gets, and selecting a
+  mode whose value differs says so once per mode and session (`/sandbox`
+  shows the installed mode); on Linux the
+  sandbox's loopback is its own, so nothing is reachable from the host
+  until managed jobs relay declared ports. The awareness section tells the
+  model what a server it starts can do on the current platform. The costs
+  (unsandboxed loopback services, LAN exposure of `0.0.0.0` servers) are in
+  SECURITY.md and `docs/sandbox.md`. An unknown key inside `sandbox.network`
+  now warns instead of doing nothing. Requested for macOS by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
+  [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
+  tighten-only logic, tests, and security notes this takes over.
+- **The model is told how you answered a network prompt.** A command whose
+  run prompted you for a host ends its output with a `<sandbox_network>`
+  block naming the host and your answer (allowed for the session or the
+  mode, denied, dismissed), so the model no longer takes a connection that
+  worked after your approval for an unfiltered network, and does not retry
+  one you denied.
+
+### Changed
+- **`@anthropic-ai/sandbox-runtime` 0.0.80 -> 0.0.81.** Every change is on
+  Windows; Linux and macOS are untouched. Two ways out of the sandbox are
+  closed: a sandboxed process could start an AppContainer child whose
+  connections the fence did not match, and could impersonate the real user
+  through the inherited stdin pipe. Sandboxed commands now run under a
+  write-restricted token (an ordinary token of the sandbox account could
+  write wherever `Users` holds write access, whatever the allow list said);
+  Schannel clients cannot do TLS under it: `curl` in both builds (Git for
+  Windows ships a Schannel curl too), PowerShell web requests and .NET
+  HTTP; `git`, Node, Python and Go programs work.
+  `/sandbox install` now asks one question, whether your user profile
+  should be readable to sandboxed commands (default Yes: per-user tools and
+  feed sign-ins work, the credential stores such as `.ssh`, `.aws`, `.gnupg`
+  and `.config\gh` stay unreadable, the grant is per machine and takes
+  minutes once; answer No on a shared machine), opens loopback for
+  `sandbox.allowLocalBinding` unless every sandboxed mode turns it off, and
+  asks before replacing an install made with other options. With the
+  grant, a session passes the grant's configuration-file variables
+  (`NPM_CONFIG_USERCONFIG`, `PIP_CONFIG_FILE`, `MAVEN_ARGS`, `RUSTUP_HOME`,
+  `CARGO_HOME`) to sandboxed commands, records the global config's denies
+  inside the profile as exclusions of the grant at install (a deny the
+  grant does not exclude costs the runtime seconds at every initialize;
+  `/sandbox` lists any left), leaves the now redundant tool roots
+  and other `allowRead` entries inside the profile out of its grants
+  (an excluded store a mode names on purpose goes through the runtime's
+  explicit read option), keeps a mode's denies inside the profile in
+  force, and refuses up front, with the reason, a write root that holds a
+  protected store or a grant the runtime would not rely on; `/sandbox`
+  shows `Profile reads: granted at install` or `absent`
+  ([docs/troubleshooting.md, Reading your profile on Windows](docs/troubleshooting.md#reading-your-profile-on-windows)).
+  Write grants on project roots are kept between sessions, so only the
+  first session in a project walks its tree. The install has to be run once more
+  (`/sandbox install`, one UAC prompt, in place): until then the sandbox
+  reports that an earlier release set it up, and the sandboxed modes ask
+  before every bash command.
+
+## [2.5.0]
+
+### Added
+- **A shipped `docs/` reference, and every hint points into it.** The
+  package now carries `docs/` (configuration, modes, permissions, sandbox,
+  network, troubleshooting, architecture). The system prompt names the
+  folder in every mode, like pi does for its own docs, and each message that
+  explains a limit (a blocked path, a refused host, bubblewrap failing to
+  start, an unavailable sandbox, an outdated default) ends with
+  `see docs/<file>#<section>`, so the model reads the explanation instead of
+  guessing. Reading the shipped docs is not an out-of-project escape in the
+  sandboxed modes (writing to them still is). A test keeps every reference
+  pointing at an existing heading and every schema key documented. The
+  README is the short version now.
+- **`sandbox.macos`: the runtime's macOS-only switches, opt-in per mode.**
+  `allowLocalBinding` lets sandboxed bash reach loopback services and bind
+  local ports (database drivers, dev servers under test); on macOS the
+  profile otherwise allows direct TCP only to the proxy, so no allowlist
+  entry could help. `enableWeakerNetworkIsolation` allows the `trustd`
+  lookup Go programs (`gh`, `kubectl`, `terraform`, `gcloud`) need to verify
+  TLS certificates, which otherwise fails with `x509: OSStatus -26276` and a
+  misleading "token invalid" from `gh`. Both are off unless set, forwarded
+  under the runtime's own names, accepted but without effect on Linux and
+  Windows, and settable only in the global config (a project may turn a
+  switch off, never on). The awareness section tells the model about the
+  loopback carve-out when it is on and about the Go TLS limit when the
+  second switch is off; `/sandbox` shows both. The costs (unsandboxed
+  loopback services, LAN exposure of `0.0.0.0` servers, the `trustd`
+  exfiltration channel) are in SECURITY.md and `docs/sandbox.md`. An unknown
+  key inside `sandbox.network` now warns instead of doing nothing. Requested
+  by [@MagneticNeedle](https://github.com/MagneticNeedle) in
+  [#18](https://github.com/wynainfo/pi-permission-modes/issues/18) and by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#16](https://github.com/wynainfo/pi-permission-modes/issues/16) /
+  [#17](https://github.com/wynainfo/pi-permission-modes/pull/17), whose
+  tighten-only logic, tests, and security notes this takes over.
+- **`sandbox.linux.allowNestedUserNamespaces`: opt-in for programs that
+  sandbox themselves.** Runtime 0.0.80 keeps a sandboxed command in the
+  namespaces made for it, so Chromium and Electron (Playwright, Puppeteer),
+  rootless podman and buildah, and `unshare -r` fail with `EPERM` inside the
+  sandboxed modes. The switch lifts that for one mode, same rules as
+  `sandbox.macos`: off unless set, global config only, no effect elsewhere.
+  The awareness section names the limit on Linux while the switch is off,
+  with the `--no-sandbox` way around it; `/sandbox` shows the switch; the
+  cost is in SECURITY.md and `docs/sandbox.md`.
+- **`sandbox.insideRoots`: paths the bash escape heuristic treats as
+  inside.** The analysis reads every path-like argument as local, so
+  `ssh nas ls /mnt/user` prompted as an escape to `/mnt/user` and, once
+  approved, ran unsandboxed. A root listed here is not an escape: the command
+  runs sandboxed like any in-project command. Bash only; the file tools, the
+  sandbox profile and the runtime see nothing of it. Global config only, a
+  project may remove entries. `/sandbox` lists them. Proposed with a patch by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#24](https://github.com/wynainfo/pi-permission-modes/issues/24).
+- **Per-rule reasons: `{ "action": "deny", "reason": "..." }` on permission
+  patterns.** A pattern entry can carry a reason, so a block tells the model
+  what to do instead of only what failed: `"grep *": { "action": "deny",
+  "reason": "Use the grep tool; pipes like cmd | grep are fine" }`. The bare
+  `"pattern": "deny"` form keeps the generic message. On an `ask` rule the
+  reason is used only when the prompt is refused (or auto-refused headless);
+  an approval just proceeds. The reason travels with the winning rule and
+  never changes the decision. Reasons are text shown to the model, so only
+  the global config may set them: a project config's reasons are dropped
+  with a warning, and a cloned repository cannot put words in front of the
+  model. Proposed and implemented by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#14](https://github.com/wynainfo/pi-permission-modes/issues/14) /
+  [#15](https://github.com/wynainfo/pi-permission-modes/pull/15).
+
+### Changed
+- **A mode switch no longer restarts the sandbox on Linux and macOS.** When
+  the new profile keeps the network filtered (or keeps it unfiltered), the
+  runtime's config is swapped in place: the proxy reads its lists per
+  request, filesystem rules compile at the next command, and a command still
+  running keeps the sandbox it started with. No more "waiting for N running
+  sandboxed command(s)" on such a switch. Only a change between a filtered
+  and an unfiltered network restarts the runtime, as before; Windows restarts
+  on every change (its permission entries are stamped per session).
+  `/sandbox` names how the last switch went. After an in-place switch the
+  Linux violation report still judges writes by the lists the runtime was
+  started with (`docs/sandbox.md`, Violations).
+- **`@anthropic-ai/sandbox-runtime` 0.0.77 -> 0.0.80.** Behavior changes:
+  a sandboxed command on Linux can no longer create user or mount namespaces
+  (see the `sandbox.linux` switch above); on Linux `denyWrite` now wins
+  over `allowWrite` however the two are nested, as on macOS, so a
+  `denyWrite: ["~"]` makes a project under the home directory read-only.
+  Fixes that reached users: on Linux a command's first network call was
+  sometimes refused because the command could start before the in-sandbox
+  relays listened; Linux without IPv6 had every proxied command refused
+  with some socat versions; an absent `denyWrite` path where bubblewrap
+  cannot create a mount point (a protected folder of a Windows drive under
+  WSL2, a path under `/usr`) kept every command from starting; a folder
+  named like `[user-id]` kept the sandbox from starting; a glob `denyRead`
+  did not cover subtrees on file systems that report no entry types (some
+  NFS and FUSE mounts, XFS with `ftype=0`); bubblewrap 0.4 works again; on
+  macOS git over SSH passes the proxy. A refused CONNECT now says why
+  (`403 host is not on the allow list`). Node 22.12 or newer is required
+  (pi itself needs 22.19).
+
+## [2.4.3]
+
+### Security
+- **Unsandboxed modes judge bash per command.** A mode with
+  `sandbox.enabled: false` matched its bash rules against the whole command
+  line, so a name-anchored rule such as `"sudo *": "deny"` or `"ssh *": "ask"`
+  missed `cd repo && sudo id`, `VAR=1 ssh host ...`, and `echo x | ssh host
+  cat`; the `path` gate never applied to bash there at all; and quoting
+  changed the outcome (`ssh host 'zpool status'` missed a rule written for
+  `ssh host zpool status`). Such modes now run the same per-command analysis
+  as sandboxed ones (every command in the chain against the `bash` rules and
+  the `path` gate, most restrictive wins), skipping only the escape detection
+  that has no sandbox to protect. Session grants in these modes stay keyed on
+  the exact command. The stock modes are unaffected (YOLO allows everything);
+  user-defined unsandboxed modes with `ask` or `deny` rules were bypassed.
+  Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#26](https://github.com/wynainfo/pi-permission-modes/issues/26) and
+  [#21](https://github.com/wynainfo/pi-permission-modes/issues/21).
+
+### Fixed
+- **The bash prompt names the command.** `Allow bash?` and its escape,
+  sandbox-unavailable, and unsandboxed variants showed only the title, so the
+  command being approved was invisible whenever the last rendered tool call
+  was an earlier, unrelated one. The title now ends with the command, on one
+  line, cut at 80 characters. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#25](https://github.com/wynainfo/pi-permission-modes/issues/25).
+- **A refused prompt says the user denied it.** After Deny, the model saw
+  `bash blocked`, `blocked`, or `tool blocked`, the same shape as a policy
+  block or a failure, and tended to rephrase and retry. The reason now reads
+  `The user denied this <call>. Do not retry or rephrase it; if the step
+  matters, ask the user how to proceed.`, with the escape or the unavailable
+  sandbox named as the cause where one applies. Policy denies keep their own
+  text. Reported by [@donnielrt](https://github.com/donnielrt) in
+  [#19](https://github.com/wynainfo/pi-permission-modes/issues/19).
+- **Network patterns are checked with the runtime's own rule.** A single-label
+  host such as `"storage"` in `allowedDomains` passed the extension's check
+  and failed the sandbox runtime's schema at initialization, taking the whole
+  sandbox down for the mode; a `host:port` entry, which the runtime accepts,
+  was dropped as unsafe. Every `allowedDomains` and `deniedDomains` entry is
+  now validated with the runtime's `NetworkConfigSchema` when the config
+  loads: a rejected pattern is dropped with a warning that names it and the
+  accepted forms, the rest of the list stays. Reported by
+  [@donnielrt](https://github.com/donnielrt) in
+  [#22](https://github.com/wynainfo/pi-permission-modes/issues/22).
+
+## [2.4.2]
+
+### Security
+- **`**/` patterns match paths without a directory part.** `*` became `.*`
+  while `/` stayed literal, so a rule written as `**/.env` required a slash:
+  a `read` of a bare `.env` (or `cat .env` in bash) never matched it, and
+  last-match-wins fell through to `"*": "allow"`. A user-written deny or ask
+  rule of that shape was silently skipped. A `**/` at the start of a pattern
+  or right after a `/` now matches zero or more directories (`a/**/b` also
+  matches `a/b`); any other `*` keeps its meaning. The shipped defaults use
+  no `**/` patterns. Reported and fixed by
+  [@TheLastFix](https://github.com/TheLastFix) in
+  [#11](https://github.com/wynainfo/pi-permission-modes/issues/11) /
+  [#12](https://github.com/wynainfo/pi-permission-modes/pull/12).
+
+### Fixed
+- **A configured `defaultMode` is the start mode.** The engine boots on the
+  stock defaults before `session_start` loads `permission-mode.json`, and the
+  start mode was only rebased onto the loaded `defaultMode` when the stock
+  one was not a valid mode, which it always is. So `"defaultMode": "build"`
+  still started in Default. The `--perm` flag, a persisted session entry,
+  and a forwarded `PI_PERMISSION_MODE` keep their precedence. Note: a global
+  `"defaultMode": "yolo"` now really starts unsandboxed, as configured.
+  Fixed by [@lukegood](https://github.com/lukegood) in
+  [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
+- **The bubblewrap namespace hint names both fixes.** It said the AppArmor
+  restriction also applies under WSL2, which WSL2 images usually do not
+  enable, and only pointed at the README. It now names the AppArmor profile
+  for `/usr/bin/bwrap` and the sysctl.
+- **`/new`, `/resume`, `/fork`, and `/reload` keep the current mode.** pi
+  rebuilds the extension for each session, and the start mode was resolved
+  as at a process start: a resumed session switched to the mode it was last
+  used in, and the `--perm` flag applied again, so `pi --perm plan`, a switch
+  to Build, then `/new` landed back in Plan. A session replaced inside the
+  same pi process now keeps the mode you are in. The start mode is also
+  recorded in the session when it does not already end on it, so `pi -c`
+  restores the mode a session was last used in. `defaultMode` applies to a
+  fresh session at pi start. Reported by [@lukegood](https://github.com/lukegood) in
+  [#10](https://github.com/wynainfo/pi-permission-modes/pull/10).
+- **The model no longer tries SSH when `~/.ssh` is masked.** A `git fetch`
+  over a `git@` remote fails in the sandbox, and ssh's debug output still
+  lists "Trying private key" for every default key path, so a model kept
+  probing keys and ssh options. When a mode masks `~/.ssh`, the sandbox
+  section of the prompt now rules SSH out, names the HTTPS form for a `git@`
+  remote, and otherwise has the model recommend a fine-grained personal
+  access token or running the step with pi's `!` prefix. The new README
+  section "Git authentication" sets up such a token for git over HTTPS.
+
+## [2.4.1]
+
+### Security
+- **A bare filename that is a symlink out of the project is an escape.**
+  The bash escape detector only judged tokens that look like paths (a `/`,
+  `~`, or `..`), so with an in-project `data -> ~/secret.txt`, `cat data`
+  ran sandboxed without a prompt and the sandbox allowed the read (reads
+  outside the project are only limited by `denyRead`). Arguments that name
+  a symlink in the project root are now resolved like any other path: a
+  link leaving the project prompts (and can be denied and blocked, which
+  masks the link's real target), a link staying inside does not, and a
+  link to an outside executable keeps the venv exemption. Both the AST
+  detector and the heuristic fallback share the new resolution. Globs and
+  names after a `cd` are still judged as written (SECURITY.md).
+
+### Fixed
+- **The "connection(s) blocked" hint is per command.** Refused hosts were
+  collected in one session-wide list that every sandboxed command emptied
+  at start and end, so with parallel tool calls a hint went missing or
+  showed up under the wrong command. The hint now comes from the command's
+  own `<sandbox_violations>` block (the runtime attributes each refusal to
+  the command that made it) and names only hosts the user can still allow
+  (not deny-list entries).
+- The violation block no longer reports writes to `/dev` and `/proc`
+  (e.g. `/dev/shm`): they succeed inside the sandbox, and the runtime's
+  Linux monitor misreported them as denied.
+
+### Changed
+- The npm package no longer ships the test files (`src/*.test.ts`).
+
+## [2.4.0]
+
+### Security
+- **Parallel sandboxed commands no longer lose their write denies.** The
+  extension deleted the runtime's 0-byte mount points for absent protected
+  dotfiles (`.bashrc`, `.mcp.json`, `.vscode`, ...) before and after every
+  sandboxed command. pi runs tool calls in parallel, and deleting such a
+  file on the host while another sandboxed command is running detaches that
+  command's deny mount, so it could create those files (or `.git/hooks/*`
+  when the hooks directory was missing). The sweep is gone; the runtime
+  removes its mount points once no sandbox is running and re-covers
+  leftovers itself. The sweep also deleted a user's own empty file with one
+  of those names; that is gone with it. Present since 2.0.0.
+- A sandbox profile change (switching to a mode with different sandbox
+  lists) now waits for running sandboxed commands before re-initializing
+  the runtime, which would otherwise strip their mounts and network proxy.
+
+### Added
+- **One-step plan approval.** After Plan Mode renders a plan with
+  `show_plan`, an Accept / Decline prompt follows the model's handoff line
+  as soon as the run ends. Accept switches to the approve mode (Build by
+  default) and sends a real user message, "The plan in `<path>` is
+  approved. Implement it now.", so the implementing turn starts under
+  Build's system prompt rather than under a Plan prompt still in effect.
+  Decline (or Esc) keeps Plan Mode and the pending plan. Switching into the
+  approve mode by hand while a plan is pending asks once whether to
+  implement it; `/plan approve` does it without asking, `/plan status`
+  names the pending plan. The pending plan survives reload, resume, and
+  branch navigation; an approved plan is never offered again; headless
+  sessions get no prompts. Only a plan shown in a planning mode (`"@plan"`
+  prompt) is offered, approval is refused if the file changed after it was
+  shown, and plan names with unusual characters are never put into the
+  approval message. The pending plan follows the current session branch.
+  New global config block `plan` with
+  `approveMode` and `approveMessage` (`{path}` placeholder); a project
+  config cannot set it. The Plan Mode prompt's handoff line and the
+  `show_plan` result text now point the model at the prompt instead of
+  `alt+m`.
+- **Deny and block a path for the session.** Every prompt for an
+  out-of-project path (bash escapes and the file tools) offers a fourth
+  option, "Deny and block `<path>` for this session". Plain Deny only refused
+  that one command, and reads outside the project are not contained by the
+  sandbox, so an agent that was denied `cat ~/secret.txt` could write a
+  Python script into the project and read the file anyway. Deny and block
+  adds the path to the session's block list, which every sandboxed command
+  from then on carries as extra `denyRead` (the runtime compiles filesystem
+  rules per command, so no restart): bash reads of it get nothing (Linux
+  masks the file with `/dev/null`,
+  macOS returns EPERM), the file tools refuse it without a prompt, a later
+  bash command naming it is blocked outright, and the awareness section
+  lists it so the model stops probing. A block also closes any `allowRead`
+  carve-out at or under it. Only the exact file or directory is
+  blocked, never the home directory, a system root, a direct child of `/`,
+  or an ancestor of the project or of a writable root; when nothing can be
+  blocked safely the option is not offered. `/perm blocks` lists the
+  session's blocks, `/perm unblock <path>` lifts one, `/perm clear-approvals`
+  clears them together with the grants. Session lifetime only.
+
+- **`sandbox.allowRead`: carve-outs inside `denyRead`.** A mode can now
+  deny a whole region and re-open paths inside it (deny-then-allow, a
+  runtime feature since 0.0.77). The README shows a "strict home" mode
+  built on it: `denyRead: ["~"]` with the project, the scratch base, and the
+  toolchain directories in `allowRead`; everything else under the home
+  directory reads as absent inside bash. A more specific `denyRead` or a
+  session block inside a carve-out still wins. Project configs may only
+  remove carve-outs. The awareness section lists them, `/sandbox` shows
+  them, and Deny and block keeps offering paths that a carve-out re-exposes
+  while skipping paths a deny already masks.
+
+### Fixed
+- `/perm <typo>` no longer cycles to the next mode: an argument that is
+  neither a mode name nor a subcommand prints the usage line. A bare
+  `/perm` still cycles.
+
+### Changed
+- **Sandbox runtime upgraded from `@anthropic-ai/sandbox-runtime` 0.0.26 to
+  0.0.77.** The runtime moved a long way in between, and several of this
+  extension's workarounds became upstream fixes:
+  - The `!` quoting bug is fixed in the runtime's own quoter. The
+    command-file launcher stays: it also sets `TMPDIR` and keeps long
+    heredocs clear of bubblewrap's argument cap.
+  - **Git worktrees and submodules sandbox normally on Linux.** The runtime
+    protects `.git/hooks` only when `.git` is a directory, so a gitfile no
+    longer breaks bubblewrap and the extension no longer degrades those
+    projects to prompting. Their git dir and common dir (outside the
+    project) are made writable inside the sandbox so `git add`/`commit`
+    work, with `hooks`, `config`, and the pointer files write-denied as in
+    a normal repository. The `.git` file is validated as a layout git
+    itself creates (worktree back-reference or submodule `core.worktree`),
+    never `/`, home, or an ancestor of either, and is itself write-denied,
+    so a planted gitfile grants nothing. Plan mode keeps them read-only.
+  - `TMPDIR` inside sandboxed bash is the session scratch directory,
+    passed explicitly: the launcher used to copy pi's own `TMPDIR` over it,
+    which on macOS (where 0.0.77 no longer allows `/var/folders`) would
+    break `mktemp`. pi's environment for the bash tool now reaches
+    sandboxed commands as it does unsandboxed ones.
+  - The extension re-opens the runtime's own package directory inside the
+    sandbox: under a `denyRead` that covers it (a strict-home `~`), the
+    runtime's seccomp helper would otherwise be unreadable and every command
+    would fail with exit 127.
+  - An empty network allowlist starts the filtering proxy itself now, so the
+    reserved placeholder domain the extension used to inject is gone.
+  - The runtime removes the 0-byte mount points bubblewrap leaves for absent
+    protected dotfiles after every command; the extension's own sweep
+    remains as the fallback for a session that died mid-command.
+  - **Sandbox violations reach the model.** A run's output now ends with the
+    runtime's `<sandbox_violations>` block when a command tried to write
+    outside the writable roots or to reach a refused host (Linux: refused
+    write attempts via a seccomp observer; macOS: the system sandbox log).
+    Each run is attributed under its own id, with the real command text
+    rather than the launcher.
+  - Dependency problems are reported precisely: missing tools or a root
+    caller without `CAP_SETFCAP` degrade to prompting with the reason in the
+    footer; non-fatal findings (no seccomp helper for the architecture, so
+    unix sockets stay unrestricted) are shown once and listed by `/sandbox`.
+    A wrap-time refusal (`LinuxSandboxProfileError`) fails the command with
+    its code instead of a generic error. When bubblewrap itself cannot create
+    its namespaces the output says so and points at the Ubuntu 24.04
+    `kernel.apparmor_restrict_unprivileged_userns` sysctl (README, Install).
+  - Allowed hosts that resolve to loopback, link-local, this host, or a cloud
+    metadata address are refused by the runtime (see SECURITY.md).
+  - WSL1 is detected and reported as unsupported; native Windows stays
+    unsupported on the extension's side (the runtime's Windows sandbox is an
+    alpha that needs a separate install and integration).
+  - The package grew to about 9 MB on disk: the runtime vendors its seccomp
+    helper, a Java proxy agent, and a Windows binary.
+- **Default `denyRead` covers more credential files:** `~/.netrc`,
+  `~/.git-credentials`, `~/.pypirc`, `~/.gem/credentials`, `~/.vault-token`,
+  `~/.password-store`, and pi's own `~/.pi/agent/auth.json` and
+  `oauth.json`, in Default, Plan, and Build. Files that tools read from
+  inside the sandbox (`~/.config/gh/hosts.yml`, `~/.kube`,
+  `~/.docker/config.json`, `~/.npmrc`) are deliberately not included; the
+  README shows a stricter "strict home" list to paste. Note that the pi auth
+  entry means a `pi` started from inside sandboxed bash cannot authenticate;
+  remove it if you spawn nested pi sessions that way. Existing global
+  configs get the outdated-default warning for their old `denyRead`.
+- The outdated-default audit now reports the whole version span a value
+  shipped in (e.g. "the 2.0.0 to 2.3.1 default") instead of only the newest
+  range that carried it.
+
+## [2.3.1]
+
+### Security
+- **File-tool guards now judge the path pi actually opens.** pi's `read`,
+  `write`, `edit`, `ls`, `grep`, and `find` normalize their `path` before
+  opening it: `~` and `~/…` expand to the home directory, a leading `@` is
+  stripped, and `file://` URLs become paths. The extension's guards judged
+  the raw string, so `read ~/.ssh/id_rsa` resolved lexically to a missing
+  in-project path and was allowed while pi read the real file, and `write
+  @.env` slipped past the protected-path backstop. The dispatcher now applies
+  the same normalization first; paths containing a NUL byte are blocked.
+- **A session grant never covers an escape.** "Allow for session" was keyed
+  on command names, so approving an in-project `cat README.md` let a later
+  `cat ~/.ssh/id_rsa` pass without a prompt, and, being an out-of-project
+  escape, run UNSANDBOXED; likewise `env FOO=1 ls` covered `env sudo …`.
+  Escapes (out-of-project path, privilege escalation) are now keyed on the
+  exact command string: an approved escape covers only that command.
+- **Protected names match case-insensitively, and `.envrc` is protected.** On
+  case-insensitive filesystems `.GIT` and `.ENV` are `.git` and `.env`; the
+  backstop compared exact case. `.envrc` (executed by direnv on `cd`) joins
+  the protected files.
+- **A malformed project config could take the loader down and with it the
+  sandbox.** A repository's `.pi/permission-mode.json` with a wrong-typed
+  value (`"modes": {"default": null}`, `"allowWrite": 5`, a `"__proto__"`
+  mode) threw inside the loader; pi swallowed the exception, so the session
+  continued on the STOCK defaults with the user's global config ignored and
+  the OS sandbox never initialized, and every in-project command then ran
+  unsandboxed after a "sandbox unavailable" prompt. Every field of both
+  layers is now type-checked and dropped with a warning instead of thrown
+  on, prototype names (`__proto__`, `constructor`, `prototype`) are never
+  treated as modes anywhere, a project file that is not a regular file or
+  exceeds 1 MiB is ignored, and the session start keeps the previous
+  configuration if loading fails for any other reason.
+- **"Allow forever" no longer replaces an unparsable global config.** A
+  stray comma in `permission-mode.json` made the persist step start from an
+  empty object and overwrite the file, losing custom modes and settings.
+  It now refuses with an error naming the file; the session grant still
+  applies. The seeded `"*"` entry comes from the effective stock+global
+  surface value rather than a blanket `ask`, so a project's tightened
+  overlay is never baked into the global file and other tools keep their
+  mode's default.
+- **An invalid action inside a pattern map now coerces to `deny`** like the
+  string form did; it was dropped, so a typo in a deny rule became allow.
+- **A new global mode is validated:** missing `sandbox.enabled`/`writable`
+  default to `true` with a warning instead of silently running bash
+  unsandboxed, and a missing `permission` block defaults to `{}` (every
+  surface asks) instead of crashing every tool call.
+- **A headless child never starts in YOLO** even when the global
+  `cycleOrder` lists only YOLO: the fallback now searches every mode.
+- **A dangling in-project symlink pointing outside the project was judged
+  inside.** The containment check resolves symlinks on the longest existing
+  prefix of a path; a link whose target does not exist yet failed that
+  resolution and fell back to its lexical, in-project location. The file
+  tools are not OS-sandboxed, so a `write` through such a link would have
+  created the target file outside the project without a prompt. Dangling
+  links are now followed to where they point (bounded against cycles).
+
+### Fixed
+- **Sandbox lifecycle hardening.** An abort that landed while the runtime was
+  still wrapping a command (or a call that was already cancelled) did not
+  stop it; the command ran to completion. The wrapper now refuses to spawn a
+  cancelled call, hands the signal to the runtime, and kills a run whose
+  abort arrived during the wrap. Profile switches are serialized and the
+  controller tracks whether the runtime is initialized separately from
+  `ready`, so overlapping `alt+m` presses or a re-run of session start can
+  no longer leave the runtime enforcing an older profile than the footer
+  shows. If the sandbox becomes unavailable between a command's approval and
+  its execution, the call fails with a message instead of running
+  unsandboxed. The command-file directory is a private `mkdtemp` under `/tmp`
+  rather than under an inherited `TMPDIR`.
+- **Network prompts work with an empty allowlist, and an absent one is called
+  what it is.** The runtime starts its filtering proxy only for a non-empty
+  `allowedDomains`, so a mode with `[]` got no proxy: the live prompts, `/net
+  allow`, `/net open`, and `request_network_access` were inert while the
+  footer said "filtered". A reserved `.invalid` placeholder now keeps the
+  proxy path alive for that case. A mode with no `allowedDomains` at all is
+  not filtered by the runtime; the footer, the awareness section, and the
+  request tool now say "unrestricted" instead of claiming filtering. The
+  "network open" wording mentions denied domains, which `/net open` cannot
+  lift. Session grants and remembered denies compare hostnames
+  case-insensitively.
+- **`TMPDIR` points at the scratch directory in every sandboxed run**, set by
+  the launcher itself rather than relying on the runtime's proxy env block;
+  read-only modes (Plan) keep the scratch directory writable so `mktemp` and
+  Python's `tempfile` work there as they did before 2.3.0.
+- **The scratch directory refuses a planted symlink.** A link at
+  `/tmp/pi/<session-id>` (the base is shared and world-writable by design)
+  was followed: its target would have been made mode 0700, added to
+  `allowWrite`, and used as `TMPDIR`. The session folder must now be a real
+  directory owned by the current user, and a base that has become a symlink
+  is refused. A blank `PI_PERMISSION_TMPDIR` no longer suppresses the sticky
+  bit on the shared base.
+- An explicit `--perm` flag now wins over the persisted session mode on
+  resume, as documented.
+- **Bash escape detection sees what it used to miss.** Redirect targets
+  (`echo x > /etc/evil`, `cat < /etc/hostname`, `$(< /etc/hostname)`), the
+  words of `[[ -f /etc/shadow ]]`, heredocs fed to a shell (`bash <<EOF`),
+  `eval` strings, `bash -o pipefail -c …`, `find … -exec sudo …`, `coproc`,
+  escaped and ANSI-C spellings (`\/etc/x`, `$'/etc/x'`), `$HOME`-built
+  paths, `~user`, glued flag values (`if=/etc/x`, `--git-dir=/etc/x`,
+  `-C/etc`), and a bare `cd`/`cd -`/`pushd` (which go to the home or an
+  unknown directory) all prompt now. A `bash` policy rule is also matched
+  against the basename of a path head, the command a wrapper runs, and the
+  quote-normalized spelling, so `"sudo*": "deny"` catches `/usr/bin/sudo`,
+  `time sudo`, and `\git push` catches `"git push*"`. Shell globs and brace
+  expansion remain matched as written (documented).
+- `/perm init` and "Allow forever" write the public `$schema` URL; the stock
+  file's relative path did not resolve from the agent directory. The schema
+  no longer requires `enabled`/`writable` on every `sandbox` block, since
+  partial overrides are what the loader supports and the extension writes.
+- A directory named `..foo` inside the project was treated as outside it
+  (the containment check tested for a `..` prefix rather than a `..`
+  segment), prompting on every access.
+- **A venv's `bin/python` no longer prompts (and no longer runs unsandboxed
+  once approved).** The bash escape detector follows symlinks, so an
+  in-project interpreter that links to the system Python - which is what
+  `python -m venv` creates - resolved outside the project and prompted on
+  every run; approving it lifted the sandbox for a command that was entirely
+  in-project by intent. An in-project path whose symlink target is an
+  executable file outside the project is now not an escape, in both the
+  tree-sitter and the heuristic path. Symlinks to outside directories or
+  non-executable files, dangling links, and paths named by their outside
+  location still prompt as before; the file tools still follow symlinks.
+- **The awareness section now says that background processes die with the
+  command.** Each bash call runs in its own sandbox (a fresh PID namespace on
+  Linux) that is torn down when the command exits, so `&`, `nohup`, and
+  `setsid` cannot start anything long-running; a job either kept the call
+  hanging until the timeout or was gone by the next turn, and the model found
+  out by wasting turns. The section tells it up front to run long tasks in
+  the foreground with an adequate timeout, or to ask the user.
+- **Exclamation marks no longer arrive as `\!` in sandboxed bash.** The
+  sandbox runtime embeds the command in a `bash -c` string that it quotes with
+  the shell-quote package, up to three times over on Linux. Whenever the
+  command contains a single quote, shell-quote uses its double-quoted form
+  and escapes `!` as `\!`, which bash keeps literally inside double quotes.
+  So every heredoc, `python3 -c '...'`, or `printf` with a `!` ran with
+  corrupted bytes: no error, just `\!` in the output or on disk (the write
+  tool, which bypasses bash, was unaffected). The command text is now kept
+  out of that quoting entirely: it is written to a private host-side file
+  (outside every `allowWrite`, mode 0600) and the runtime receives a launcher
+  without single quotes or exclamation marks, `bash -c "$(<"file")"`, which
+  survives the quoting unchanged; the innermost bash runs the file content
+  as an ordinary `bash -c` script with the same `$0`, error prefixes, and
+  exit status. Tests run the launcher through a real bash and through the
+  runtime's nested shell-quote passes, with a control proving the raw path
+  is mangled.
+
+## [2.3.0]
+
+### Added
+- **Per-session scratch directory.** Every session gets `/tmp/pi/<session-id>/`
+  (Linux/macOS; `<os.tmpdir()>/pi/<session-id>/` on Windows; base overridable
+  with `PI_PERMISSION_TMPDIR`). The awareness section names it, `TMPDIR`
+  points there inside bash (sandboxed runs via the runtime's `CLAUDE_TMPDIR`,
+  unsandboxed runs via the bash tool's spawn hook; Windows also gets
+  `TEMP`/`TMP`), it is always sandbox-writable and in-bounds - appended to
+  the active profile, so a config that narrows the shared base can't make
+  the instruction untrue - and `/sandbox` shows it. Keyed on pi's session id,
+  so `/reload` and resume find their files; nothing is deleted at shutdown.
+  Instead sibling folders untouched for 7 days are swept at session start
+  (directories only; files/symlinks never touched; the current folder is
+  touched on start). YOLO, otherwise silent, now gets a short "scratch
+  directory" pointer so temp files stay per-session there too.
+
+- **Outdated-default warnings for the global config.** `/perm init` writes a
+  full copy of the stock defaults, which silently pins users to that version's
+  values: a later default change never reaches a copy that still carries the
+  old value (this release's `/tmp` narrowing being the first case). At every
+  session start, each value in the global file is now compared with the
+  current default and with every older default shipped since 2.0.0
+  (`defaults-history.json`, clear-text with version ranges): a value that
+  differs from the current default but equals an older one is reported by
+  field with both values and its version range; customizations and custom
+  modes stay silent. After an upgrade that changed the defaults, users with a
+  global config get a one-time notice naming the changed fields (last seen
+  version kept in `~/.pi/agent/permission-mode/state.json`). Set
+  `"acknowledgeDefaults": "<version>"` to keep an outdated value knowingly;
+  `/perm init` now stamps the copy's origin in a `$comment`.
+
+### Changed
+- **Shipped `allowWrite` narrowed from `/tmp` to `/tmp/pi`** in Default, Plan,
+  and Build. The sandbox no longer lets bash write anywhere under `/tmp`, only
+  under the shared pi base and the session folder - so sessions can't clobber
+  each other's or other tools' temp files. A tool that hardcodes `/tmp` and
+  ignores `TMPDIR` now fails inside the sandbox (silently - the awareness
+  prompt tells the model to ask); add `/tmp` back to a mode's `allowWrite`
+  if you depend on one. Existing global configs that list `/tmp` keep it.
+- The awareness section's writable-paths bullet no longer suggests `/tmp/...`
+  for temp files; the scratch-directory bullet does.
+- **`hideTools` may now hide `show_plan`.** It was hard-exempted, so an
+  explicit entry was silently swallowed; setups that never use Plan mode had
+  no way to drop the tool from the model's list. The list is now honored
+  literally. Stock modes are unchanged; a mode with the `"@plan"` system
+  prompt that hides `show_plan` gets a loader warning, since that prompt
+  instructs the model to call it. Proposed and first implemented by
+  [@trtyr](https://github.com/trtyr) in
+  [#8](https://github.com/wynainfo/pi-permission-modes/pull/8).
+- README and SECURITY.md now say plainly that **native Windows has no
+  sandbox**: the sandboxed modes prompt only, the network allowlist is not
+  enforced, and WSL2 is the way to get OS-level containment there.
+- SECURITY.md documents the temp-dir caveats: in-bounds dirs are shared and
+  world-readable, the runtime's own unconditional write paths (`/tmp/claude`,
+  `~/.npm/_logs`, `~/.claude/debug`, macOS `$TMPDIR`), and that narrowing is
+  enforced on Linux, partial on macOS, policy-only on Windows.
+
+## [2.2.1]
+
+### Security
+- **A newline inside a bash argument bypassed `ask`/`deny` bash policy.** The
+  glob matcher compiled `*` to a regex `.*` without the dotAll flag, and `.`
+  excludes `\n` in JavaScript - so any command whose joined `name args…`
+  string spanned lines matched no `bash` pattern at all, not even `"*"`. In
+  the sandboxed modes the per-token `path` layer still matched and contributed
+  `allow`, so most-restrictive resolved to `allow`: `sudo sh -c "\nid\n"`
+  skipped a `"sudo *": "deny"` rule, and in the shipped Default mode a
+  multi-line argument turned `bash: {"*": "ask"}` into a silent run with no
+  prompt. The OS sandbox still contained in-project writes, so this is a
+  prompting/policy failure rather than a containment escape (see
+  SECURITY.md, "Gating ≠ containment") - but `deny` is documented as a hard
+  boundary and could be skipped with a single newline. Affected 2.0.0 to 2.2.0.
+  The same miss made unsandboxed modes fall through to the `ask` fallback,
+  so YOLO prompted on every heredoc or multi-line script. Fix: the matcher
+  now uses the dotAll flag, so `*` and `?` span newlines and `"*"` is a true
+  universal fallback for multi-line targets. Regression tests added at the
+  matcher, resolver, and dispatcher levels.
+
+  Reported by [dyoon98-creator](https://github.com/dyoon98-creator). Independently
+  found and fixed earlier, as a wildcard bug, in
+  [#5](https://github.com/wynainfo/pi-permission-modes/pull/5) by
+  [@BeLeap](https://github.com/BeLeap) (dotAll flag) and in
+  [#6](https://github.com/wynainfo/pi-permission-modes/pull/6) by
+  [@hsiangron](https://github.com/hsiangron) (`[\s\S]` classes) - the security
+  angle was not visible from those reports.
+
+### Fixed
+- **A bash command matched by no rule now falls back to `ask`, not `allow`.**
+  In the sandboxed modes each command extracted from a chain is judged
+  separately, and one that matched neither a `bash` pattern nor the `path`
+  gate was treated as `allow` - while the file-tool resolver and the
+  unsandboxed/heuristic bash path already fell back to `ask`. A sparse custom
+  mode such as `"bash": { "git *": "allow" }` with no `"*"` rule therefore ran
+  the commands it never mentioned silently. Both paths now share the same
+  least-privilege default. The shipped modes all specify `"*"` and are
+  unaffected; `decideBashChain` in `resolve.ts` holds the chain logic and its
+  fallback, unit-tested.
+- **Temp-dir paths no longer prompt as "outside project" (and no longer run
+  unsandboxed on approval).** The bash escape detector and the file-tool
+  project boundary knew nothing about the sandbox profile, so a path under
+  the mode's own `allowWrite` - `/tmp` in every shipped sandboxed mode, plus
+  the runtime's `/tmp/claude` where it points `TMPDIR` - prompted as an
+  escape on every `mktemp`, download, or scratch file, even though the
+  sandbox permitted the write anyway. Worse, approving that prompt ran the
+  whole command unsandboxed, turning a harmless temp write into a real
+  containment escape. The sandbox-writable roots are now in-bounds for both
+  bash and the file tools: they neither prompt nor lift the sandbox. Other
+  absolute paths, relative escapes, and privilege escalation prompt exactly
+  as before; unsandboxed modes (YOLO) are governed solely by their
+  `external_directory` policy, as before.
+- **`show_plan` and `request_network_access` now carry a `promptSnippet`**, so
+  they are listed in the system prompt's "Available tools" section like the
+  built-ins instead of reaching the model only through the JSON schema, which
+  weakened tool awareness in some models. Reported by [@sunzx](https://github.com/sunzx)
+  in [#3](https://github.com/wynainfo/pi-permission-modes/issues/3).
+- **macOS git worktrees/submodules are sandboxed again.** The gitfile guard
+  that degrades the OS sandbox (bubblewrap can't bind `.git/hooks` under a
+  `.git` file) ran on every platform, but only the Linux runtime mounts that
+  path - `sandbox-exec` denies the `.git/hooks`/`.git/config` paths in its
+  profile instead. The guard is now Linux-only. Reported by
+  [@pafuent](https://github.com/pafuent) in [#4](https://github.com/wynainfo/pi-permission-modes/issues/4).
+- **The extension no longer enables every built-in tool.** Tool hiding
+  rebuilt the active set from *all* registered tools minus `hideTools`, which
+  silently re-enabled `grep`, `find`, `ls`, and `powershell` for everyone and
+  overrode `defaultTools` in `settings.json`. It now starts from pi's current
+  active set, remembers only what it hid, and restores only that on a mode
+  switch - your own tool selection stays in force. Reported by
+  [@sunzx](https://github.com/sunzx) in [#2](https://github.com/wynainfo/pi-permission-modes/issues/2).
+
+## [2.2.0]
+
+### Added
+- **Blocked network hosts now ask instead of silently failing.** The sandbox
+  proxy consults a live callback for any host outside the domain allowlist -
+  the connection waits while you choose *Allow for session / Allow forever /
+  Deny*. Denies are remembered for the session (no prompt-storms from
+  retrying installers); dismissed prompts deny without being remembered;
+  headless sessions deny as before. Every blocked host is appended to the
+  command output, so the model sees exactly which connection the sandbox
+  refused instead of blaming phantom proxies. Opt back into silent denying
+  with `sandbox.askOnBlockedHost: false` (projects may force it off, never
+  on).
+- **`request_network_access` tool** (all modes): the model asks for one or
+  more domains with a reason; a single prompt covers the whole batch. Grants
+  apply instantly - the callback reads live session state, no sandbox
+  re-init. "Allow forever" persists to the active mode's allowlist in the
+  global config, computed against the stock+global base so a project's
+  tightened list is never baked in.
+- **`/net` command and `alt+n`**: `/net status | allow <domain…> | open |
+  restrict | reset`; `alt+n` toggles filtering for the session. The footer
+  now always shows the state and the shortcuts:
+  `Build (sandboxed in project dir, alt+m)  Network: filtered (alt+n)` -
+  green when filtered, orange when open.
+- **Sandbox awareness in the system prompt.** Sandboxed modes now inject a
+  factual `## Sandbox & permissions` section each turn, generated from the
+  active mode's **merged** profile: writable paths, denied reads, the network
+  allowlist, and how the prompt flow works (boundary-crossing commands are
+  fine to issue - the user is asked automatically). Previously the model
+  discovered the sandbox by crashing into it (writes to `$HOME`, installs
+  into `~/.npm`, fetches from non-allowlisted domains) and wasted turns
+  retrying variants. When the sandbox is degraded the section says so and
+  points at the confirmation prompts instead. Headless-fallback children get
+  the factual section too (their steering `systemPrompt` stays skipped). Opt
+  out per mode with `"injectSandboxInfo": false`; unsandboxed modes (YOLO)
+  never inject.
+
+## [2.1.2]
+
+### Security
+- **Project config could disable the sandbox and suppress bash prompts.** A
+  repository-controlled `.pi/permission-mode.json` could set
+  `sandbox.enabled:false` on an inherited-sandboxed mode (Default/Build);
+  combined with the non-sandbox bash fast path treating a disabled sandbox as
+  YOLO-class, this ran the next bash command unsandboxed with no confirmation -
+  defeating the "opening an untrusted repo can't weaken your protection"
+  guarantee. Affected 2.0.0 to 2.1.1. Two fixes: project-local tighten-only config
+  can no longer change `sandbox.enabled` (it cannot disable containment
+  inherited from stock/global policy), and unsandboxed modes now honor explicit
+  `bash:ask`/`bash:deny` policy (YOLO stays non-interactive only because its
+  bash policy explicitly resolves to `allow`). Loader and end-to-end dispatcher
+  regressions added for both paths.
+
+  Reported by Magnus Gille (https://gille.ai/).
+
+## [2.1.1]
+
+### Added
+- Published to npm: `pi install npm:pi-permission-modes` is now the primary
+  install method (README updated with pinning, project-local install, and
+  update commands).
+- pi.dev gallery demo video (`pi.video` in package.json), hosted as a GitHub
+  release asset.
+
+### Changed
+- README: CI + MIT badges; deduplicated mode table and protection sections;
+  stale claims fixed across README/SECURITY/CONTRIBUTING (see the docs-cleanup
+  commits).
+
+## [2.1.0]
+
+Hardening release: the six findings from a full code review, each with tests.
+
+### Added
+- **End-to-end dispatcher tests** (`src/index.test.ts`): a fake `pi`/`ctx`
+  harness drives the real registered handlers - prompt flows and blocks per
+  mode, bash session grants across chains, Plan-mode Markdown gating and
+  prompt injection, "Allow forever" persistence + hot-reload, skill/input
+  gating, startup mode resolution (`--perm` flag, session-entry restore),
+  `alt+m` cycling, `/perm init`, and the project tighten-only overlay.
+  Hermetic (temp project root + `PI_CODING_AGENT_DIR` temp agent dir,
+  `--no-sandbox`); self-skips when the host-bundled pi SDK isn't installed.
+  CI now runs `npm install` (tolerantly) so the harness executes there.
+
+### Changed
+- **CI typecheck is now blocking.** The pi SDK peer deps resolve from the
+  public npm registry, so `tsc --noEmit` failures are real regressions, not
+  missing-types noise; `continue-on-error` is gone.
+- **The config loader warns on array-index-like pattern keys** (e.g.
+  `"777": "deny"`): JS iterates such keys first regardless of file order,
+  silently breaking a pattern-map's last-match-wins semantics. The pattern
+  still loads; the warning tells the user their ordering may not be honored.
+
+### Fixed
+- **The headless-child safety fallback no longer injects the fallback mode's
+  system prompt.** A headless child with no forwarded mode still starts in the
+  most restrictive mode (Plan, with its full policy), but Plan's planning
+  prompt - "write a plan file, ask the user to press alt+m" - is not injected
+  into a headless worker it would misdirect. The implicit fallback is also not
+  re-exported via `PI_PERMISSION_MODE` as if it were an explicit choice;
+  grandchildren derive the same safe fallback themselves. An explicitly
+  forwarded or flagged mode behaves as before, prompt included.
+- **The protected-path backstop now resolves symlinks.** `edit`/`write` targets
+  are matched lexically AND on their canonical (symlink-resolved) path, so an
+  in-project link pointing at `.git/`, `.env`, a shell rc file, etc. no longer
+  smuggles a write past the backstop - this matters most in Build, where file
+  tools don't prompt and aren't OS-sandboxed. In-project targets are judged
+  root-relative, so a project that itself lives under a directory named
+  `node_modules` (debugging a dependency in place) isn't spuriously
+  write-blocked.
+- **Privilege escalation is now detected through wrappers and shell `-c`
+  scripts in the tree-sitter path.** `env PATH=/x sudo …`, `nice -n 10 sudo …`,
+  `timeout 5 doas …`, `xargs sudo …` unwrap to their effective command head,
+  and `sh|bash|… -c '<script>'` scripts are re-parsed recursively
+  (depth-limited) so their inner commands are visible to privilege/escape
+  detection *and* policy/path matching - closing the `bash -c 'sudo …'` gap the
+  AST path had while the regex fallback (whole-string scan) caught it. As a
+  bonus, the AST path no longer false-positives on mere mentions
+  (`grep sudo README.md` is not "privilege escalation").
+- **Bash session approvals now cover the whole chain, not just its first
+  command.** A grant is keyed on every command name tree-sitter extracts, and a
+  chain passes silently only when ALL of its names are already granted -
+  "Allow `git` for session" no longer silently approves
+  `git status && curl … | sh`. Approving a chain remembers each of its names;
+  when no parse is available (heuristic fallback), the key is the exact command
+  string.
+- **The cross-cutting `path` gate now binds bash in the tree-sitter path.** Each
+  extracted command is judged against the `path` patterns - the joined
+  `name args…` string *and* every individual token - via `decideBashCommand`, so
+  a rule like `"path": { "*.env": "deny" }` blocks `cat .env extra-arg` no matter
+  where the target sits in the command. Previously the AST path only consulted
+  the `bash` surface (the `path` gate applied to bash only in the regex
+  fallback, and only against the whole command line), contradicting the
+  documented "gate over ALL file access (incl. bash args)" semantics. Project
+  tighten-only overlays fold in the same way.
+
+## [2.0.0]
+
+Declarative mode engine. Modes are now **data** - each a JSON bundle of a sandbox
+profile and an allow/ask/deny policy - so they can be retuned and user-defined.
+
+### Added
+- **Declarative modes** in `permission-mode.json`: define your own modes (label,
+  color, sandbox profile, per-surface policy, hidden tools) or retune the
+  built-ins. JSON Schema at `schemas/permission-mode.schema.json`.
+- **Stock defaults ship as data** - `permission-mode.defaults.json` (same format
+  you edit), loaded over a minimal in-code safety fallback. `/perm init` copies it
+  to the global config path, ready to customize.
+- **allow / ask / deny policy engine** across surfaces: cross-cutting `path` gate,
+  `external_directory`, per-file-tool, `bash`, `web_search`, `tool` (any
+  extension tool), and `skill`. Last-match-wins within a surface; most-restrictive
+  across layers.
+- **Real bash parsing** via tree-sitter (`web-tree-sitter` + `tree-sitter-bash`):
+  per-command matching incl. commands nested in `$(...)`, backticks, and
+  subshells; structural escape/privilege detection. Falls back to the regex
+  heuristic when the WASM grammar can't load.
+- **Tool hiding** per mode (`hideTools`) - removes tools from the model before it
+  reasons (`show_plan` is never hidden).
+- **Skill gating** (the `skill` surface, via `/skill:<name>`) and **custom/extension
+  tool gating** (the `tool` surface). In Default and Plan, an unknown tool/skill
+  **prompts on first use** (Allow once / this session / forever / Deny); "Allow
+  forever" persists the rule to the global config. Build/YOLO allow all
+  tools/skills. Keeps unfamiliar tools on other hosts gated, not silently allowed.
+- **Session approvals**: `ask` prompts offer Allow once / Allow for session / Deny;
+  per-mode memory cleared on shutdown or via `/perm clear-approvals`.
+- **Subagent forwarding**: the active mode is exported as `PI_PERMISSION_MODE` and
+  adopted by child `pi` processes; headless children with no forwarded mode start
+  in the most restrictive mode (never YOLO).
+- Per-mode sandbox profiles: switching modes re-initializes the sandbox when the
+  filesystem/network profile differs.
+
+### Changed
+- **BREAKING - config format & path.** `sandbox.json` is replaced by
+  `permission-mode.json`: global at `~/.pi/agent/permission-mode/permission-mode.json`,
+  project (tighten-only) at `<project>/.pi/permission-mode.json`. The old
+  `sandbox.json` is no longer read.
+- Project tighten-only now applies to the full policy (as a most-restrictive
+  overlay that provably can't loosen), not just the sandbox lists.
+- `--perm` accepts any defined mode name.
+
+### Fixed
+- **Sandbox placeholder litter.** In Default/Build, the OS sandbox left 0-byte
+  read-only files in the project for every path in its mandatory write-deny set
+  (`.bashrc`, `.gitconfig`, `.gitmodules`, `.vscode`, `.idea`, `.claude`,
+  `.mcp.json`, `.ripgreprc`, …) when those paths were absent - not just `.git`.
+  Placeholder cleanup is now generalized to the full set (removing only 0-byte
+  *files*, never real dirs/files) before and after every sandboxed run.
+
+### Preserved
+- The four built-in modes reproduce 1.0.0 behavior (parity-tested), including the
+  Plan-mode read-only sandbox + Markdown-only writes + `show_plan` flow, the
+  protected-path backstop, the sandbox-unavailable degradation, and the non-git
+  `.git`-placeholder cleanup.
+
+## [1.0.0]
+
+First public release.
+
+### Modes
+- Four switchable permission modes - **Default**, **Plan Mode**, **Build**,
+  **YOLO** - cycled with `alt+m` or set via `/perm <mode>`; persisted per session.
+- Plain-text footer indicator with per-mode colors and a muted
+  `(sandboxed in project dir)` marker.
+
+### Sandboxing
+- OS-level sandbox for in-project `bash` in Default/Plan/Build via
+  `@anthropic-ai/sandbox-runtime` (bubblewrap on Linux, `sandbox-exec` on macOS).
+- **Plan Mode** runs bash read-only (per-command `allowWrite: []` override) and
+  permits only in-project Markdown writes; injects a system prompt steering the
+  model to write a plan to `plan/<date>_<desc>.md` and render it with `show_plan`.
+- `show_plan` tool renders a written plan as formatted Markdown in the terminal,
+  display-only (kept out of the model context).
+- Graceful degradation to prompting when the sandbox is unavailable.
+
+### Safety
+- Tighten-only project config: `<project>/.pi/sandbox.json` can only make the
+  sandbox stricter; overly-broad domain patterns are rejected.
+- Symlink-aware out-of-project containment; protected-path writes blocked
+  (`.git/`, `.env*`, dotfiles, etc.).
+- Non-git projects stay fully sandboxed: the 0-byte `.git` placeholder bubblewrap
+  plants is cleaned up around every run. Real git worktrees/submodules (a
+  non-empty `.git` file) degrade to prompting instead of breaking.
+
+[2.0.0]: https://github.com/wynainfo/pi-permission-modes/releases/tag/v2.0.0
+[1.0.0]: https://github.com/wynainfo/pi-permission-modes/releases/tag/v1.0.0

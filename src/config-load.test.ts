@@ -1,0 +1,844 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import {
+  FALLBACK_CONFIG,
+  globalConfigFile,
+  isUnsafeDomain,
+  effectiveShells,
+  loadModeConfig,
+  loadStockDefaults,
+  persistModeDomains,
+  persistModeRule,
+  profileToConfig,
+  readOnlyOverride,
+  stockDefaultsFile,
+  effectiveClassifier,
+  tightenClassifier,
+} from "./config-load.ts";
+import { decide, decideDetailed } from "./resolve.ts";
+
+/** Build a temp agentDir + cwd, optionally seeding the global/project JSON. */
+function sandbox(opts: { global?: unknown; project?: unknown } = {}): {
+  cwd: string;
+  agentDir: string;
+  errors: string[];
+  cleanup: () => void;
+} {
+  const tmpdir = os.tmpdir();
+  if (!existsSync(tmpdir)) mkdirSync(tmpdir, { recursive: true });
+  const tmp = mkdtempSync(path.join(tmpdir, "permmode-"));
+  const agentDir = path.join(tmp, "agent");
+  const cwd = path.join(tmp, "project");
+  mkdirSync(cwd, { recursive: true });
+  if (opts.global !== undefined) {
+    const dir = path.join(agentDir, "permission-mode");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      typeof opts.global === "string" ? opts.global : JSON.stringify(opts.global),
+    );
+  }
+  if (opts.project !== undefined) {
+    const dir = path.join(cwd, ".pi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, "permission-mode.json"),
+      typeof opts.project === "string" ? opts.project : JSON.stringify(opts.project),
+    );
+  }
+  const errors: string[] = [];
+  return { cwd, agentDir, errors, cleanup: () => rmSync(tmp, { recursive: true, force: true }) };
+}
+
+test("loadStockDefaults: reads the shipped JSON → five modes, correct defaults", () => {
+  const errors: string[] = [];
+  const c = loadStockDefaults((m) => errors.push(m));
+  assert.equal(errors.length, 0, errors.join("; ")); // stock file present & valid
+  assert.equal(c.defaultMode, "default");
+  assert.deepEqual(c.cycleOrder, ["default", "plan", "build", "auto", "yolo"]);
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]);
+  assert.ok(stockDefaultsFile().endsWith("permission-mode.defaults.json"));
+});
+
+test("FALLBACK_CONFIG is a valid, safe single-mode config", () => {
+  assert.equal(FALLBACK_CONFIG.defaultMode, "default");
+  assert.deepEqual(Object.keys(FALLBACK_CONFIG.modes), ["default"]);
+  const d = FALLBACK_CONFIG.modes.default;
+  assert.equal(d.sandbox.enabled, true); // sandboxed
+  assert.equal(decide(d, "bash", "ls"), "ask"); // never silently allows
+  assert.equal(decide(d, "write", "x.ts"), "ask");
+});
+
+test("loadModeConfig: no files → the five built-in modes", () => {
+  const s = sandbox();
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.defaultMode, "default");
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]);
+  assert.equal(s.errors.length, 0);
+  s.cleanup();
+});
+
+test("global: full authority — add a mode, redefine a built-in, change defaults", () => {
+  const s = sandbox({
+    global: {
+      defaultMode: "build",
+      cycleOrder: ["build", "default", "review"],
+      modes: {
+        default: { permission: { bash: "deny" } }, // redefine: deny bash in Default
+        review: {
+          label: "Review",
+          color: "mdLink",
+          sandbox: { enabled: true, writable: false },
+          permission: { bash: "allow", write: "deny" },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.defaultMode, "build");
+  assert.deepEqual(c.cycleOrder, ["build", "default", "review"]);
+  assert.equal(decide(c.modes.default, "bash", "ls"), "deny"); // redefined
+  assert.equal(decide(c.modes.default, "read", "x"), "allow"); // untouched surface preserved
+  assert.ok(c.modes.review); // new mode added
+  assert.equal(c.modes.review.label, "Review");
+  s.cleanup();
+});
+
+test("warns when a Plan-prompt mode hides show_plan; hiding it elsewhere is silent", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        plan: { hideTools: ["show_plan"] }, // contradiction: the @plan prompt calls show_plan
+        build: { hideTools: ["show_plan"] }, // fine: no planning prompt here
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.plan.hideTools, ["show_plan"]); // honored as written
+  assert.deepEqual(c.modes.build.hideTools, ["show_plan"]);
+  assert.equal(s.errors.length, 1, s.errors.join("; "));
+  assert.match(s.errors[0], /mode "plan" hides show_plan/);
+  s.cleanup();
+});
+
+test("warns on array-index-like pattern keys (JS front-loads their order)", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        // "777" would iterate FIRST regardless of file order, silently breaking
+        // last-match-wins; the pattern still loads, but the user is told.
+        default: { permission: { bash: { "*": "ask", "777": "deny" } } },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(s.errors.some((e) => /bare number/.test(e) && /777/.test(e)));
+  assert.equal(decide(c.modes.default, "bash", "777"), "ask"); // "777" reordered before "*" — exactly the trap being warned about
+  // Non-index-like numeric-ish keys don't warn.
+  const s2 = sandbox({
+    global: { modes: { default: { permission: { bash: { "7z*": "allow", "0x*": "allow" } } } } },
+  });
+  loadModeConfig(s2.cwd, s2.agentDir, (m) => s2.errors.push(m));
+  assert.ok(!s2.errors.some((e) => /bare number/.test(e)));
+  s.cleanup();
+  s2.cleanup();
+});
+
+test("project: tighten-only — can tighten, never loosen", () => {
+  const s = sandbox({
+    project: {
+      modes: {
+        default: { permission: { bash: "deny", write: "allow" }, sandbox: { enabled: false, writable: false } },
+        yolo: { sandbox: { enabled: true } },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  // bash ask → deny: tightened.
+  assert.equal(decide(c.modes.default, "bash", "ls"), "deny");
+  // write ask + project "allow": most-restrictive overlay can't loosen → stays ask.
+  assert.equal(decide(c.modes.default, "write", "x.ts"), "ask");
+  // A project cannot disable globally enabled containment.
+  assert.equal(c.modes.default.sandbox.enabled, true);
+  assert.ok(s.errors.some((e) => /cannot change sandbox\.enabled.*false/.test(e)));
+  // Project config also cannot create a new runtime profile by enabling a
+  // globally unsandboxed mode.
+  assert.equal(c.modes.yolo.sandbox.enabled, false);
+  assert.ok(s.errors.some((e) => /cannot change sandbox\.enabled.*true/.test(e)));
+  // sandbox writable forced off.
+  assert.equal(c.modes.default.sandbox.writable, false);
+  s.cleanup();
+});
+
+test("project: repeating inherited sandbox.enabled is a silent no-op", () => {
+  const s = sandbox({
+    project: {
+      modes: {
+        default: { sandbox: { enabled: true } },
+        yolo: { sandbox: { enabled: false } },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.default.sandbox.enabled, true);
+  assert.equal(c.modes.yolo.sandbox.enabled, false);
+  assert.ok(!s.errors.some((e) => /sandbox\.enabled/.test(e)));
+  s.cleanup();
+});
+
+test("project: sandbox intersect/union + unsafe domains rejected", () => {
+  const s = sandbox({
+    project: {
+      modes: {
+        build: {
+          sandbox: {
+            allowWrite: ["."], // intersect with ['.','/tmp/pi'] → ['.']
+            denyRead: ["~/.config"], // union
+            allowRead: ["~/.cache", "~/.local"], // intersect with the global carve-outs: a project cannot open new ones
+            network: { allowedDomains: ["github.com", "*.com"] }, // *.com rejected
+          },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  const sb = c.modes.build.sandbox;
+  assert.deepEqual(sb.allowWrite, ["."]); // intersected
+  assert.ok(sb.denyRead?.includes("~/.config") && sb.denyRead?.includes("~/.ssh")); // unioned
+  assert.deepEqual(sb.allowRead, [], "the stock mode has no carve-outs, so the project cannot add any");
+  assert.deepEqual(sb.network?.allowedDomains, ["github.com"]); // *.com dropped (intersect of safe)
+  assert.ok(s.errors.some((e) => /ignoring allowedDomains pattern "\*\.com" in /.test(e)));
+  s.cleanup();
+});
+
+test("project: cannot add a mode or change defaults", () => {
+  const s = sandbox({
+    project: { defaultMode: "yolo", modes: { hacker: { label: "H", color: "error", sandbox: { enabled: false, writable: true }, permission: {} } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.defaultMode, "default"); // unchanged
+  assert.ok(!c.modes.hacker); // not added
+  assert.ok(s.errors.some((e) => /cannot add new mode/.test(e)));
+  assert.ok(s.errors.some((e) => /defaultMode\/cycleOrder/.test(e)));
+  s.cleanup();
+});
+
+test("malformed JSON keeps prior layer and reports the error", () => {
+  const s = sandbox({ global: "{ not valid json " });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(Object.keys(c.modes).sort(), ["auto", "build", "default", "plan", "yolo"]); // defaults intact
+  assert.ok(s.errors.some((e) => /could not parse/.test(e)));
+  s.cleanup();
+});
+
+test("unknown surface and $schema are handled", () => {
+  const s = sandbox({
+    global: { $schema: "./x.json", modes: { default: { permission: { bogus: "deny", bash: "deny" } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.default, "bash", "ls"), "deny"); // valid surface applied
+  assert.ok(s.errors.some((e) => /unknown surface "bogus"/.test(e)));
+  s.cleanup();
+});
+
+test("readOnlyOverride drops allowWrite; profileToConfig maps fields; isUnsafeDomain", () => {
+  const base = { network: { deniedDomains: [] }, filesystem: { allowWrite: ["."], denyRead: ["~/.ssh"], denyWrite: [] } };
+  assert.deepEqual(readOnlyOverride(base).filesystem, { allowWrite: [], denyRead: ["~/.ssh"], denyWrite: [] });
+  const c = profileToConfig({ enabled: true, writable: true, allowWrite: ["."], denyRead: ["~/.ssh"], denyWrite: [] });
+  assert.equal(c.filesystem.allowWrite[0], ".");
+  // The runtime's own rule decides: single-label hosts fail it, a :port suffix passes (#22).
+  assert.ok(isUnsafeDomain("*") && isUnsafeDomain("*.com") && isUnsafeDomain("http://x") && isUnsafeDomain("storage") && isUnsafeDomain("nas01"));
+  assert.ok(!isUnsafeDomain("*.github.com") && !isUnsafeDomain("github.com") && !isUnsafeDomain("registry.npmjs.org:443"));
+});
+
+test("global config: network patterns the runtime rejects are dropped with a warning, the rest kept (#22)", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "perm-domains-"));
+  try {
+    mkdirSync(path.join(base, "permission-mode"));
+    writeFileSync(
+      path.join(base, "permission-mode/permission-mode.json"),
+      JSON.stringify({
+        modes: { build: { sandbox: { network: { allowedDomains: ["storage", "storage.example", "github.com:443"], deniedDomains: ["nas01", "evil.example"] } } } },
+      }),
+    );
+    const errors: string[] = [];
+    const c = loadModeConfig(base, base, (m) => errors.push(m));
+    assert.deepEqual(c.modes.build.sandbox.network?.allowedDomains, ["storage.example", "github.com:443"]);
+    assert.deepEqual(c.modes.build.sandbox.network?.deniedDomains, ["evil.example"]);
+    assert.ok(errors.some((e) => /ignoring allowedDomains pattern "storage" in .*: the sandbox runtime accepts/.test(e)), errors.join("\n"));
+    assert.ok(errors.some((e) => /ignoring deniedDomains pattern "nas01"/.test(e)));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("profileToConfig: every list is an array, only allowedDomains may be absent (unrestricted network)", () => {
+  const bare = profileToConfig({ enabled: true, writable: true });
+  assert.deepEqual(bare.filesystem, { denyRead: [], allowWrite: [], denyWrite: [] });
+  assert.deepEqual(bare.network, { allowedDomains: undefined, deniedDomains: [], allowLocalBinding: true });
+  const filtered = profileToConfig({ enabled: true, writable: true, network: { allowedDomains: [] } });
+  assert.deepEqual(filtered.network.allowedDomains, []); // an empty list is kept: it filters everything
+  const carved = profileToConfig({ enabled: true, writable: true, denyRead: ["~"], allowRead: [".", "~/.cache"] });
+  assert.deepEqual(carved.filesystem, { denyRead: ["~"], allowRead: [".", "~/.cache"], allowWrite: [], denyWrite: [] });
+  assert.ok(!("allowRead" in bare.filesystem), "absent stays absent (the runtime treats undefined as none)");
+  const denied = profileToConfig({ enabled: true, writable: true, network: { deniedDomains: ["evil.example"] } });
+  assert.equal(denied.network.allowedDomains, undefined);
+  assert.deepEqual(denied.network.deniedDomains, ["evil.example"]);
+});
+
+// The runtime does not validate what initialize() receives, so the shape is
+// checked here against its exported zod schema for every stock sandboxed mode
+// (skipped when the runtime is not installed, e.g. a bare checkout).
+const runtimeSchema = await import("@anthropic-ai/sandbox-runtime")
+  .then((m) => (m as { SandboxRuntimeConfigSchema?: { parse: (v: unknown) => unknown } }).SandboxRuntimeConfigSchema)
+  .catch(() => undefined);
+test("profileToConfig output validates against the runtime's SandboxRuntimeConfigSchema for the stock modes", { skip: runtimeSchema ? false : "sandbox-runtime not installed" }, () => {
+  const stock = loadStockDefaults();
+  const checked: string[] = [];
+  for (const [name, mode] of Object.entries(stock.modes)) {
+    if (!mode.sandbox.enabled) continue;
+    const cfg = profileToConfig(mode.sandbox);
+    assert.doesNotThrow(() => runtimeSchema!.parse({ network: cfg.network, filesystem: cfg.filesystem }), `${name}: ${JSON.stringify(cfg)}`);
+    // Plan mode's per-wrap override keeps the shape too.
+    assert.doesNotThrow(() => runtimeSchema!.parse(readOnlyOverride(cfg, ["/tmp/pi/s1"])));
+    checked.push(name);
+  }
+  assert.deepEqual(checked, ["default", "plan", "build", "auto"]);
+  // The README's strict-home shape (denyRead "~" with allowRead carve-outs) validates as well.
+  const strict = profileToConfig({ ...stock.modes.build.sandbox, denyRead: ["~"], allowRead: [".", "/tmp/pi", "~/.cache"] });
+  assert.doesNotThrow(() => runtimeSchema!.parse({ network: strict.network, filesystem: strict.filesystem }));
+});
+
+test("project: allowRead can only be narrowed, and only where the global mode has carve-outs", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { denyRead: ["~"], allowRead: [".", "~/.cache", "~/.config"] } } } },
+    project: { modes: { build: { sandbox: { allowRead: ["~/.cache", "~/Secrets"] } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.denyRead, ["~"]);
+  assert.deepEqual(c.modes.build.sandbox.allowRead, ["~/.cache"], "kept what both list; ~/Secrets was never open");
+  s.cleanup();
+});
+
+test("persistModeRule: creates the global file with the learned rule, round-trips", () => {
+  const s = sandbox();
+  const file = persistModeRule(s.agentDir, "default", "tool", "fooTool", "allow");
+  assert.ok(file.endsWith(path.join("permission-mode", "permission-mode.json")));
+  const written = JSON.parse(readFileSync(file, "utf-8"));
+  // Seeds "*": "ask" so other tools keep prompting, plus the learned allow.
+  assert.deepEqual(written.modes.default.permission.tool, { "*": "ask", fooTool: "allow" });
+  // The persisted allow takes effect through the normal loader.
+  const c = loadModeConfig(s.cwd, s.agentDir, () => {});
+  assert.equal(decide(c.modes.default, "tool", "fooTool"), "allow");
+  assert.equal(decide(c.modes.default, "tool", "otherTool"), "ask"); // others still prompt
+  s.cleanup();
+});
+
+test("persistModeDomains: appends to the FULL stock+global allowlist, round-trips", () => {
+  const s = sandbox();
+  const stockDomains = loadStockDefaults().modes.default.sandbox.network?.allowedDomains ?? [];
+  const file = persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const written = JSON.parse(readFileSync(file, "utf-8"));
+  // mergeGlobal replaces `network` wholesale, so the stock domains must be
+  // baked into the persisted list or they'd be lost on the next load.
+  const list = written.modes.default.sandbox.network.allowedDomains as string[];
+  for (const d of stockDomains) assert.ok(list.includes(d), `stock domain ${d} preserved`);
+  assert.ok(list.includes("api.internal.io"));
+  const c = loadModeConfig(s.cwd, s.agentDir, () => {});
+  assert.ok(c.modes.default.sandbox.network?.allowedDomains?.includes("api.internal.io"));
+  assert.ok(c.modes.default.sandbox.network?.allowedDomains?.includes(stockDomains[0]));
+  // Idempotent: persisting again doesn't duplicate.
+  persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const again = JSON.parse(readFileSync(file, "utf-8")).modes.default.sandbox.network.allowedDomains as string[];
+  assert.equal(again.filter((d) => d === "api.internal.io").length, 1);
+  s.cleanup();
+});
+
+test("persistModeDomains: never bakes a project's tightened list into the global config", () => {
+  // Project intersects the allowlist down to one domain; a forever-grant made
+  // while that project is open must still persist against the UNTIGHTENED base.
+  const s = sandbox({ project: { modes: { default: { sandbox: { network: { allowedDomains: ["github.com"] } } } } } });
+  const stockDomains = loadStockDefaults().modes.default.sandbox.network?.allowedDomains ?? [];
+  const file = persistModeDomains(s.agentDir, "default", ["api.internal.io"]);
+  const list = JSON.parse(readFileSync(file, "utf-8")).modes.default.sandbox.network.allowedDomains as string[];
+  for (const d of stockDomains) assert.ok(list.includes(d), `stock domain ${d} not lost to project tightening`);
+  s.cleanup();
+});
+
+test("project: askOnBlockedHost can be forced off (silent deny), never back on", () => {
+  const s = sandbox({
+    global: { modes: { default: { sandbox: { askOnBlockedHost: false } } } },
+    project: { modes: { default: { sandbox: { askOnBlockedHost: true } }, build: { sandbox: { askOnBlockedHost: false } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.default.sandbox.askOnBlockedHost, false); // project cannot re-enable asking
+  assert.equal(c.modes.build.sandbox.askOnBlockedHost, false); // project may force silent-deny
+  s.cleanup();
+});
+
+test("sandbox.insideRoots: global list kept, wrong type dropped, project may only remove entries, not forwarded to the runtime", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { insideRoots: ["/mnt/user", "/srv/backup"] } }, plan: { sandbox: { insideRoots: "/mnt/user" } } } },
+    project: { modes: { build: { sandbox: { insideRoots: ["/srv/backup", "/elsewhere"] } }, default: { sandbox: { insideRoots: ["/elsewhere"] } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.insideRoots, ["/srv/backup"]);
+  assert.deepEqual(c.modes.default.sandbox.insideRoots, []);
+  assert.equal(c.modes.plan.sandbox.insideRoots, undefined);
+  assert.ok(s.errors.some((e) => /insideRoots.*wrong type/.test(e)));
+  assert.ok(!("insideRoots" in profileToConfig(c.modes.build.sandbox)));
+  s.cleanup();
+});
+
+test("sandbox.linux: global opt-in projects to the runtime under its name; projects can only turn it off", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: { sandbox: { linux: { allowNestedUserNamespaces: true } } },
+        plan: { sandbox: { linux: { allowNestedUserNamespaces: "yes", bogus: true } } },
+        yolo: { sandbox: { linux: { allowNestedUserNamespaces: true } } },
+      },
+    },
+    project: {
+      modes: {
+        default: { sandbox: { linux: { allowNestedUserNamespaces: true } } }, // enabling: warned and ignored
+        yolo: { sandbox: { linux: { allowNestedUserNamespaces: false } } }, // real tightening
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.linux, { allowNestedUserNamespaces: true });
+  assert.equal(profileToConfig(c.modes.build.sandbox).allowNestedUserNamespaces, true);
+  assert.equal(c.modes.default.sandbox.linux?.allowNestedUserNamespaces, undefined);
+  assert.ok(s.errors.some((e) => /cannot enable sandbox\.linux\.allowNestedUserNamespaces/.test(e)));
+  assert.equal(c.modes.plan.sandbox.linux?.allowNestedUserNamespaces, undefined);
+  assert.ok(s.errors.some((e) => /sandbox\.linux\.allowNestedUserNamespaces.*wrong type/.test(e)));
+  assert.ok(s.errors.some((e) => /unknown sandbox\.linux field "bogus"/.test(e)));
+  assert.equal(c.modes.yolo.sandbox.linux?.allowNestedUserNamespaces, false);
+  // Emitted only when true: the stock profile and a false switch stay byte-identical.
+  assert.ok(!("allowNestedUserNamespaces" in profileToConfig(c.modes.default.sandbox)));
+  assert.ok(!("allowNestedUserNamespaces" in profileToConfig(c.modes.yolo.sandbox)));
+  s.cleanup();
+});
+
+test("sandbox.macos: global opt-in projects to the runtime under its name; projects can only turn the switch off", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: { sandbox: { macos: { enableWeakerNetworkIsolation: true } } },
+        plan: { sandbox: { macos: { enableWeakerNetworkIsolation: "yes", bogus: true } } },
+        yolo: { sandbox: { macos: { enableWeakerNetworkIsolation: true } } },
+      },
+    },
+    project: {
+      modes: {
+        build: { sandbox: { macos: { enableWeakerNetworkIsolation: true } } }, // repeating true: silent
+        default: { sandbox: { macos: { enableWeakerNetworkIsolation: true } } }, // enabling: warned and ignored
+        plan: { sandbox: { macos: { enableWeakerNetworkIsolation: false } } }, // false over absent: stays absent, silent
+        yolo: { sandbox: { macos: { enableWeakerNetworkIsolation: false } } }, // real tightening
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.modes.build.sandbox.macos, { enableWeakerNetworkIsolation: true });
+  assert.equal(c.modes.default.sandbox.macos?.enableWeakerNetworkIsolation, undefined);
+  assert.ok(s.errors.some((e) => /cannot enable sandbox\.macos\.enableWeakerNetworkIsolation/.test(e)));
+  assert.equal(c.modes.plan.sandbox.macos?.enableWeakerNetworkIsolation, undefined);
+  assert.equal(c.modes.yolo.sandbox.macos?.enableWeakerNetworkIsolation, false);
+  assert.ok(s.errors.some((e) => /sandbox\.macos\.enableWeakerNetworkIsolation.*wrong type/.test(e)), "wrong-typed global value dropped with a warning");
+  assert.ok(s.errors.some((e) => /unknown sandbox\.macos field "bogus"/.test(e)));
+  assert.ok(!s.errors.some((e) => /build.*macos/.test(e)), "repeating inherited true and tightening stay silent");
+  s.cleanup();
+});
+
+test("sandbox.allowLocalBinding: on unless set; a project may turn it off, never back on; the 2.5.0 spelling sandbox.macos.allowLocalBinding still works", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: { sandbox: { allowLocalBinding: false } },
+        plan: { sandbox: { allowLocalBinding: "yes" } },
+        default: { sandbox: { allowLocalBinding: false, macos: { allowLocalBinding: true } } }, // both spellings: the top-level one wins
+        yolo: { sandbox: { macos: { allowLocalBinding: false } } }, // the 2.5.0 spelling alone: read as the top-level key
+      },
+    },
+    project: {
+      modes: {
+        build: { sandbox: { allowLocalBinding: true } }, // enabling over a global false: warned and ignored
+        default: { sandbox: { allowLocalBinding: false } }, // real tightening
+        plan: { sandbox: { allowLocalBinding: true } }, // repeating the default: silent
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(c.modes.build.sandbox.allowLocalBinding, false);
+  assert.ok(s.errors.some((e) => /cannot enable sandbox\.allowLocalBinding/.test(e)));
+  assert.equal(c.modes.default.sandbox.allowLocalBinding, false);
+  assert.equal(profileToConfig(c.modes.default.sandbox).network.allowLocalBinding, undefined, "off: the runtime key stays absent");
+  assert.equal(c.modes.plan.sandbox.allowLocalBinding, undefined);
+  assert.equal(profileToConfig(c.modes.plan.sandbox).network.allowLocalBinding, true, "unset means on");
+  assert.ok(s.errors.some((e) => /sandbox\.allowLocalBinding.*wrong type/.test(e)), "wrong-typed global value dropped with a warning");
+  assert.equal(c.modes.yolo.sandbox.allowLocalBinding, false, "the 2.5.0 spelling is read");
+  assert.deepEqual(c.modes.yolo.sandbox.macos, {}, "and not kept under macos");
+  assert.ok(!s.errors.some((e) => /sandbox\.macos field "allowLocalBinding"/.test(e)), "the old spelling is not an unknown key");
+  assert.ok(!s.errors.some((e) => /plan.*allowLocalBinding/.test(e)), "repeating the default stays silent");
+  s.cleanup();
+});
+
+test("shells: global settings load, a project may only tighten, wrong types and unknown keys warn", () => {
+  const s = sandbox({
+    global: { shells: { enabled: true, maxConcurrent: 2, notify: "note", bogus: 1, } },
+    project: { shells: { enabled: false, maxConcurrent: 5, notify: "wake" } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.shells, { enabled: false, maxConcurrent: 2, notify: "note" });
+  assert.ok(s.errors.some((e) => /unknown key shells\.bogus/.test(e)));
+  assert.ok(s.errors.some((e) => /cannot loosen shells\.maxConcurrent/.test(e)));
+  assert.ok(s.errors.some((e) => /cannot loosen shells\.notify/.test(e)));
+  assert.deepEqual(effectiveShells(undefined), { enabled: true, maxConcurrent: 4, notify: "wake" });
+  assert.deepEqual(effectiveShells({ notify: "none" }), { enabled: true, maxConcurrent: 4, notify: "none" });
+  s.cleanup();
+  const t = sandbox({
+    global: { shells: { enabled: "yes", maxConcurrent: -1, notify: "loud" } },
+    project: { shells: { maxConcurrent: 1, notify: "none" } }, // tightening the defaults
+  });
+  const d = loadModeConfig(t.cwd, t.agentDir, (m) => t.errors.push(m));
+  assert.deepEqual(d.shells, { maxConcurrent: 1, notify: "none" });
+  assert.equal(t.errors.filter((e) => /shells\.\w+ has the wrong type/.test(e)).length, 3);
+  t.cleanup();
+});
+
+test("sandbox.network: unknown nested keys warn instead of silently doing nothing", () => {
+  const s = sandbox({
+    global: { modes: { build: { sandbox: { network: { allowedDomains: ["example.com"], allowLocalBinding: true } } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  // The documented path is the top-level sandbox.allowLocalBinding: the
+  // runtime-shaped nested key must not silently pretend to work.
+  assert.deepEqual(c.modes.build.sandbox.network, { allowedDomains: ["example.com"] });
+  assert.ok(s.errors.some((e) => /unknown sandbox\.network field "allowLocalBinding"/.test(e)));
+  s.cleanup();
+});
+
+test("profileToConfig: the runtime switches are emitted only when on, under the runtime's names", () => {
+  const off = profileToConfig({ enabled: true, writable: true, allowLocalBinding: false });
+  assert.ok(!("allowLocalBinding" in off.network), "false stays absent (the runtime's default)");
+  assert.ok(!("enableWeakerNetworkIsolation" in off));
+  const on = profileToConfig({
+    enabled: true,
+    writable: true,
+    macos: { enableWeakerNetworkIsolation: true },
+    network: { allowedDomains: ["example.com"] },
+  });
+  assert.equal(on.network.allowLocalBinding, true);
+  assert.equal(on.enableWeakerNetworkIsolation, true);
+  if (runtimeSchema) {
+    assert.doesNotThrow(() =>
+      runtimeSchema.parse({ network: on.network, filesystem: on.filesystem, enableWeakerNetworkIsolation: on.enableWeakerNetworkIsolation }),
+    );
+  }
+});
+
+test("persistModeRule: converts a string surface to a map and preserves other content", () => {
+  const s = sandbox({
+    global: { $schema: "./x.json", modes: { default: { permission: { tool: "allow", bash: "deny" } } } },
+  });
+  // Write the user's existing global file first (sandbox() only seeds it in memory if given).
+  const dir = path.join(s.agentDir, "permission-mode");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    path.join(dir, "permission-mode.json"),
+    JSON.stringify({ $schema: "./x.json", modes: { default: { permission: { tool: "allow", bash: "deny" } } } }),
+  );
+  const file = persistModeRule(s.agentDir, "default", "tool", "fooTool", "allow");
+  const written = JSON.parse(readFileSync(file, "utf-8"));
+  assert.equal(written.$schema, "./x.json"); // preserved
+  assert.equal(written.modes.default.permission.bash, "deny"); // preserved
+  assert.deepEqual(written.modes.default.permission.tool, { "*": "allow", fooTool: "allow" }); // string→map
+  s.cleanup();
+});
+
+test("hostile project config never throws: malformed values are ignored with warnings, the global layer stays", () => {
+  const cases: unknown[] = [
+    { modes: { default: null } },
+    { modes: { default: { sandbox: { allowWrite: 5 } } } },
+    { modes: { default: { sandbox: { denyRead: "~/.ssh", denyWrite: { a: 1 }, network: { allowedDomains: "x" } } } } },
+    { modes: { default: { sandbox: 7, permission: "allow" } } },
+    // As JSON text: an object LITERAL with a __proto__ key sets the prototype,
+    // JSON.parse (like a file on disk) creates an own "__proto__" property.
+    '{"modes":{"__proto__":{"sandbox":{"allowWrite":[]},"permission":{"bash":"deny"}}}}',
+    { modes: { constructor: { permission: { bash: "deny" } } } },
+    { modes: [] },
+    [],
+    "just a string",
+  ];
+  for (const project of cases) {
+    const s = sandbox({
+      global: { modes: { default: { permission: { read: { "*": "allow", "*.pem": "deny" } } } } },
+      project: typeof project === "string" ? project : JSON.stringify(project),
+    });
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    assert.equal(decide(c.modes.default, "read", "key.pem"), "deny", `global layer applied for ${JSON.stringify(project)}`);
+    assert.equal(c.modes.default.sandbox.enabled, true);
+    assert.ok(s.errors.length > 0, `warned for ${JSON.stringify(project)}`);
+    s.cleanup();
+  }
+  // No prototype pollution from a "__proto__" mode.
+  assert.equal(({} as { projectOverlay?: unknown }).projectOverlay, undefined);
+  assert.equal(Object.hasOwn(Object.prototype, "projectOverlay"), false);
+});
+
+test("project config that is not a regular file, or oversized, is ignored", () => {
+  const s = sandbox();
+  const dir = path.join(s.cwd, ".pi");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(path.join(dir, "permission-mode.json")); // a directory in place of the file
+  let c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(c.modes.default);
+  assert.match(s.errors.join("\n"), /not a regular file/);
+  rmSync(path.join(dir, "permission-mode.json"), { recursive: true });
+  writeFileSync(path.join(dir, "permission-mode.json"), `{"modes":{},"pad":"${"x".repeat(1 << 20)}"}`);
+  s.errors.length = 0;
+  c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.ok(c.modes.default);
+  assert.match(s.errors.join("\n"), /larger than/);
+  s.cleanup();
+});
+
+test("global: invalid action inside a pattern map is coerced to deny, not dropped", () => {
+  const s = sandbox({ global: { modes: { build: { permission: { bash: { "*": "allow", "sudo*": "denny" } } } } } });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.build, "bash", "sudo rm -rf /"), "deny");
+  assert.match(s.errors.join("\n"), /treating as deny/);
+  s.cleanup();
+});
+
+test("global: pattern entries accept { action, reason } objects; reasons surface on block", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: {
+          permission: {
+            bash: { "*": "allow", "grep *": { action: "deny", reason: "use the grep tool instead" } },
+            tool: { "*": "allow", "legacy-tool": { action: "ask", reason: "prefer the new tool" } },
+          },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(s.errors.length, 0, s.errors.join("; "));
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "grep foo"), { action: "deny", reason: "use the grep tool instead" });
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "ls"), { action: "allow" });
+  // An ask rule carries its reason too (used only when the prompt is refused).
+  assert.deepEqual(decideDetailed(c.modes.build, "tool", "legacy-tool"), { action: "ask", reason: "prefer the new tool" });
+  s.cleanup();
+});
+
+test("global: malformed rule objects fail safe (deny, reason dropped) with warnings", () => {
+  const s = sandbox({
+    global: {
+      modes: {
+        build: {
+          permission: {
+            bash: {
+              "*": "allow",
+              "sudo *": { action: "denny", reason: "typo keeps deny" },
+              "rm *": { action: "deny", reason: 42 },
+              "halt *": { reason: "missing action" },
+              "x *": { action: "deny", reason: "  " },
+              "y *": { action: "deny", reason: ` ${"r".repeat(600)} ` },
+              "z *": { action: "deny", reasn: "typo'd key" },
+              "w *": { action: "deny", message: "not an alias of reason" },
+            },
+          },
+        },
+      },
+    },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.equal(decide(c.modes.build, "bash", "sudo id"), "deny");
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "sudo id"), { action: "deny", reason: "typo keeps deny" });
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "rm -rf /").action, "deny");
+  assert.equal(decideDetailed(c.modes.build, "bash", "rm -rf /").reason, undefined);
+  assert.equal(decide(c.modes.build, "bash", "halt now"), "deny"); // missing action → deny
+  assert.equal(decideDetailed(c.modes.build, "bash", "x 1").reason, undefined); // empty reason dropped
+  const long = decideDetailed(c.modes.build, "bash", "y 1").reason ?? "";
+  assert.equal(long.length, 500); // over-long reasons truncate
+  assert.equal(decide(c.modes.build, "bash", "z 1"), "deny"); // unknown key ignored, action kept
+  assert.equal(decideDetailed(c.modes.build, "bash", "z 1").reason, undefined);
+  assert.equal(decide(c.modes.build, "bash", "w 1"), "deny"); // `message` is not accepted, action kept
+  assert.equal(decideDetailed(c.modes.build, "bash", "w 1").reason, undefined);
+  assert.match(s.errors.join("\n"), /unknown key "message"/);
+  assert.match(s.errors.join("\n"), /treating as deny/);
+  assert.match(s.errors.join("\n"), /non-string reason/);
+  assert.match(s.errors.join("\n"), /empty reason/);
+  assert.match(s.errors.join("\n"), /truncating/);
+  assert.match(s.errors.join("\n"), /unknown key "reasn"/);
+  s.cleanup();
+});
+
+test("project overlay: the tightening applies, its reason is dropped with a warning (text for the model is global-only)", () => {
+  const s = sandbox({
+    project: { modes: { build: { permission: { bash: { "curl *": { action: "deny", reason: "no network fetches here" } } } } } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.match(s.errors.join("\n"), /project config cannot set rule reasons.*bash\.curl \*.*docs\/configuration\.md#project-config/);
+  // Stock build allows bash "*"; the overlay tightens curl to deny, without the repo's words.
+  assert.deepEqual(decideDetailed(c.modes.build, "bash", "curl https://x"), { action: "deny" });
+  assert.equal(decide(c.modes.build, "bash", "ls"), "allow"); // untouched commands stay allowed
+  s.cleanup();
+});
+
+test("global: a new mode without permission/sandbox booleans gets safe defaults and warnings; prototype names are not modes", () => {
+  const s = sandbox({
+    global:
+      '{"cycleOrder":["default","review","constructor","toString"],"modes":{' +
+      '"review":{"label":"Review","color":"mdLink","sandbox":{}},' +
+      '"__proto__":{"label":"X","color":"muted","sandbox":{"enabled":true,"writable":true},"permission":{}}}}',
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.cycleOrder, ["default", "review"]);
+  assert.equal(c.modes.review.sandbox.enabled, true);
+  assert.equal(c.modes.review.sandbox.writable, true);
+  assert.deepEqual(c.modes.review.permission, {});
+  assert.equal(decide(c.modes.review, "write", "x.ts"), "ask"); // no throw, least privilege
+  assert.ok(!Object.hasOwn(c.modes, "__proto__"));
+  assert.match(s.errors.join("\n"), /sandbox.enabled missing/);
+  assert.match(s.errors.join("\n"), /no permission block/);
+  s.cleanup();
+});
+
+test("persistModeRule/persistModeDomains refuse to clobber an unparsable or malformed global file", () => {
+  const s = sandbox({ global: '{"defaultMode":"default","modes":{"review":{"label":"R","color":"muted","sandbox":{"enabled":true,"writable":true},"permission":{}}},}' });
+  const file = globalConfigFile(s.agentDir);
+  const before = readFileSync(file, "utf-8");
+  assert.throws(() => persistModeRule(s.agentDir, "default", "tool", "myTool", "allow"), /not valid JSON/);
+  assert.throws(() => persistModeDomains(s.agentDir, "default", ["example.com"]), /not valid JSON/);
+  assert.equal(readFileSync(file, "utf-8"), before, "file untouched");
+  writeFileSync(file, '{"modes":[]}');
+  assert.throws(() => persistModeRule(s.agentDir, "default", "tool", "myTool", "allow"), /"modes" must be an object/);
+  assert.throws(() => persistModeRule(s.agentDir, "__proto__", "tool", "x", "allow"), /invalid mode name/);
+  s.cleanup();
+});
+
+test("persistModeRule seeds the map from the effective stock+global surface, never from a project overlay", () => {
+  // Build's stock `tool` is "allow"; the project tightens it to "ask" - the
+  // seed must still be allow so other tools in other projects stay silent.
+  const s = sandbox({ project: { modes: { build: { permission: { tool: "ask" } } } } });
+  const file = persistModeRule(s.agentDir, "build", "tool", "myTool", "allow");
+  const written = JSON.parse(readFileSync(file, "utf-8")) as { $schema?: string; modes: { build: { permission: { tool: Record<string, string> } } } };
+  assert.deepEqual(written.modes.build.permission.tool, { "*": "allow", myTool: "allow" });
+  assert.match(written.$schema ?? "", /^https:\/\//); // a fresh file gets the URL schema
+  // A global string shorthand seeds from the file's own value.
+  writeFileSync(file, JSON.stringify({ modes: { build: { permission: { tool: "deny" } } } }));
+  persistModeRule(s.agentDir, "build", "tool", "other", "allow");
+  const again = JSON.parse(readFileSync(file, "utf-8")) as { modes: { build: { permission: { tool: Record<string, string> } } } };
+  assert.deepEqual(again.modes.build.permission.tool, { "*": "deny", other: "allow" });
+  s.cleanup();
+});
+
+test("readOnlyOverride keeps the listed dirs writable (the session scratch dir)", () => {
+  const cfg = {
+    filesystem: { allowWrite: [".", "/tmp/pi", "/tmp/pi/s1"], denyRead: ["~/.ssh"], denyWrite: [] },
+    network: { allowedDomains: ["a"], deniedDomains: [] },
+  };
+  assert.deepEqual(readOnlyOverride(cfg).filesystem.allowWrite, []);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem.allowWrite, ["/tmp/pi/s1"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).filesystem.denyRead, ["~/.ssh"]);
+  assert.deepEqual(readOnlyOverride(cfg, ["/tmp/pi/s1"]).network, { allowedDomains: ["a"], deniedDomains: [] });
+});
+
+test("plan config: global strings are kept, wrong types and unknown keys warn, project cannot set it", () => {
+  const s = sandbox({
+    global: { plan: { approveMode: "default", approveMessage: "Go {path}", extra: 1 } },
+    project: { plan: { approveMode: "yolo" } },
+  });
+  const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+  assert.deepEqual(c.plan, { approveMode: "default", approveMessage: "Go {path}" });
+  assert.ok(s.errors.some((e) => /unknown key plan\.extra/.test(e)));
+  assert.ok(s.errors.some((e) => /project config cannot set plan/.test(e)));
+  s.cleanup();
+  const bad = sandbox({ global: { plan: { approveMode: 3 } } });
+  const c2 = loadModeConfig(bad.cwd, bad.agentDir, (m) => bad.errors.push(m));
+  assert.deepEqual(c2.plan, {});
+  assert.ok(bad.errors.some((e) => /plan\.approveMode must be a string/.test(e)));
+  bad.cleanup();
+  const none = sandbox({});
+  assert.equal(loadModeConfig(none.cwd, none.agentDir).plan, undefined);
+  none.cleanup();
+});
+
+test("classifier: the stock Auto mode carries the block; global sets and sanitizes it; a project may only tighten", () => {
+  const stock = loadStockDefaults();
+  assert.deepEqual(stock.cycleOrder, ["default", "plan", "build", "auto", "yolo"]);
+  assert.deepEqual(stock.modes.auto.classifier, { model: "current", strictness: 0.5, onRefuse: "refuse" });
+  assert.deepEqual(stock.modes.auto.sandbox, stock.modes.build.sandbox, "Auto is Build plus the classifier");
+  assert.deepEqual(stock.modes.auto.permission, stock.modes.build.permission);
+  assert.equal(stock.modes.build.classifier, undefined);
+
+  const s = sandbox({
+    global: {
+      modes: {
+        auto: { classifier: { model: "local/gemma", strictness: 0.8, onRefuse: "ask", guidance: "trusted: *.wyna.ch", restrict: "r", bogus: 1, extra: true } },
+        build: { classifier: { strictness: 2, onRefuse: "maybe", model: 7, guidance: 3 } },
+        plan: { classifier: false },
+        yolo: { classifier: "yes" },
+      },
+    },
+    project: {
+      modes: {
+        auto: { classifier: { strictness: 0.9, onRefuse: "refuse", model: "x/y", guidance: "loosen me", restrict: "never /srv" } },
+        build: { classifier: { strictness: 0.1, onRefuse: "refuse" } },
+        default: { classifier: { strictness: 0.9 } },
+        plan: { classifier: false },
+      },
+    },
+  });
+  try {
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    // Global: typed fields kept, the rest warned.
+    assert.deepEqual(c.modes.auto.classifier, { model: "local/gemma", strictness: 0.9, onRefuse: "ask", guidance: "trusted: *.wyna.ch", restrict: "never /srv" });
+    assert.ok(s.errors.some((e) => /unknown key classifier\.bogus/.test(e)));
+    assert.deepEqual(c.modes.build.classifier, {}, "every field of build's block was invalid, and the project's refuse over refuse is a no-op");
+    assert.ok(s.errors.some((e) => /classifier\.strictness must be a number from 0 to 1/.test(e)));
+    assert.ok(s.errors.some((e) => /classifier\.onRefuse must be "refuse" or "ask"/.test(e)));
+    assert.equal(c.modes.plan.classifier, false);
+    assert.equal(c.modes.yolo.classifier, undefined);
+    assert.ok(s.errors.some((e) => /global mode "yolo": classifier must be an object or false/.test(e)));
+    // Project: strictness raised (0.9 over 0.8), onRefuse not back to refuse, model and guidance refused, restrict added.
+    assert.ok(s.errors.some((e) => /project mode "auto": project config cannot set classifier\.model/.test(e)));
+    assert.ok(s.errors.some((e) => /project config cannot set classifier\.guidance/.test(e)));
+    assert.ok(s.errors.some((e) => /classifier\.onRefuse back to refuse/.test(e)));
+    // The project cannot lower strictness below the default and gets the warning.
+    assert.ok(s.errors.some((e) => /project mode "build": project config cannot set classifier\.strictness below the global value/.test(e)));
+    // A mode without a classifier cannot be given one by a project.
+    assert.equal(c.modes.default.classifier, undefined);
+    assert.ok(s.errors.some((e) => /project mode "default": the mode has no classifier to tighten/.test(e)));
+    // false stays false.
+    assert.equal(c.modes.plan.classifier, false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("classifier: a project may switch a mode's block off, and may switch refuse to ask", () => {
+  const s = sandbox({ project: { modes: { auto: { classifier: { onRefuse: "ask" } }, build: { classifier: false } } } });
+  try {
+    const c = loadModeConfig(s.cwd, s.agentDir, (m) => s.errors.push(m));
+    assert.deepEqual(c.modes.auto.classifier, { model: "current", strictness: 0.5, onRefuse: "ask" });
+    assert.equal(c.modes.build.classifier, undefined, "false over an absent block stays absent");
+    const t = sandbox({ project: { modes: { auto: { classifier: false } } } });
+    try {
+      assert.equal(loadModeConfig(t.cwd, t.agentDir).modes.auto.classifier, false);
+    } finally {
+      t.cleanup();
+    }
+    assert.deepEqual(effectiveClassifier({}), { model: "current", strictness: 0.5, onRefuse: "refuse" });
+    assert.deepEqual(tightenClassifier({ strictness: 0.2 }, { strictness: 0.2 }, "w", () => {}), { strictness: 0.2 }, "repeating the value is a no-op");
+  } finally {
+    s.cleanup();
+  }
+});

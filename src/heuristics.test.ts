@@ -1,0 +1,121 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { bashConfirmReason, normalizeBashToken, pathPartOfToken, PRIVILEGE_RE, tokenTarget } from "./heuristics.ts";
+
+const ROOT = "/home/proj";
+
+test("privilege escalation is flagged", () => {
+  for (const cmd of ["sudo rm -rf /", "su -", "doas whoami", "pkexec id", "chroot /mnt"]) {
+    assert.equal(bashConfirmReason(cmd, ROOT), "privilege escalation", cmd);
+  }
+  assert.ok(PRIVILEGE_RE.test("runuser -u root foo"));
+});
+
+test("out-of-project path tokens are flagged", () => {
+  assert.match(bashConfirmReason("cat /etc/passwd", ROOT) ?? "", /path outside project/);
+  assert.match(bashConfirmReason("ls ../sibling", ROOT) ?? "", /path outside project/);
+  assert.match(bashConfirmReason(`cat ${os.homedir()}/.bashrc`, ROOT) ?? "", /path outside project/);
+});
+
+test("in-project commands are allowed", () => {
+  assert.equal(bashConfirmReason("ls -la", ROOT), undefined);
+  assert.equal(bashConfirmReason("cat src/index.ts", ROOT), undefined);
+  assert.equal(bashConfirmReason("npm test", ROOT), undefined);
+});
+
+test("device pseudo-files are allowed (safe outside)", () => {
+  assert.equal(bashConfirmReason("echo hi > /dev/null", ROOT), undefined);
+  assert.equal(bashConfirmReason("cat /dev/urandom | head", ROOT), undefined);
+});
+
+// Locks the documented heuristic gaps: these SHOULD be caught by a real parser
+// but are not (the OS sandbox is the real enforcement). If a future change makes
+// the heuristic smarter, update these expectations deliberately.
+test("known gaps: heuristic does not parse the shell", () => {
+  // Path built via variable — not detected.
+  // The assignment's value is a glued `name=path` token and IS judged now; the
+  // later `$X` use is not (variables can't be resolved without a shell).
+  assert.match(bashConfirmReason("X=/etc/passwd; cat $X", ROOT) ?? "", /path outside project: X=\/etc\/passwd/);
+  assert.equal(bashConfirmReason("cat $X", ROOT), undefined);
+  // Privilege escalation hidden in command substitution token boundary.
+  assert.equal(bashConfirmReason("echo $(printf 's'; printf 'udo') ls", ROOT), undefined);
+});
+
+
+test("fallback: a script program's quoted text is not a path, its files are", () => {
+  assert.equal(bashConfirmReason("sed -n '/git-authentication/,/^## /p' network.md", ROOT), undefined);
+  assert.equal(bashConfirmReason("awk '/x/ {print $1}' data.txt | sed -e 's#/a#/b#' > out", ROOT), undefined);
+  assert.match(bashConfirmReason("sed -n p /etc/passwd", ROOT) ?? "", /path outside project: \/etc\/passwd/);
+  assert.match(bashConfirmReason("sed -n '/x/p' network.md; cat /etc/hosts", ROOT) ?? "", /path outside project: \/etc\/hosts/);
+  assert.match(bashConfirmReason("awk -f /etc/prog.awk x", ROOT) ?? "", /path outside project: \/etc\/prog\.awk/);
+});
+
+test("sandbox-writable roots are in-bounds for the heuristic too (parity with the AST path)", () => {
+  assert.match(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT) ?? "", /path outside project/);
+  assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", ROOT, ["/tmp"]), undefined);
+  assert.match(bashConfirmReason("cat /etc/passwd", ROOT, ["/tmp"]) ?? "", /path outside project/);
+});
+
+test("normalizeBashToken / pathPartOfToken", () => {
+  const home = os.homedir();
+  assert.equal(normalizeBashToken("$'/etc/x'"), "/etc/x");
+  assert.equal(normalizeBashToken("$'/etc/x"), "/etc/x");
+  assert.equal(normalizeBashToken("\\/etc/x"), "/etc/x");
+  assert.equal(normalizeBashToken('"$HOME"/.bashrc'), `${home}/.bashrc`);
+  assert.equal(normalizeBashToken("${HOME}/x"), `${home}/x`);
+  assert.equal(normalizeBashToken("$HOMEX"), "$HOMEX"); // not the HOME variable
+  assert.equal(normalizeBashToken("$OTHER/x"), "$OTHER/x"); // unknown variables stay
+  assert.equal(pathPartOfToken("--git-dir=/etc/x"), "/etc/x");
+  assert.equal(pathPartOfToken("if=/etc/x"), "/etc/x");
+  assert.equal(pathPartOfToken("-C/etc"), "/etc");
+  assert.equal(pathPartOfToken("-I/usr/include"), "/usr/include");
+  assert.equal(pathPartOfToken("src/app.ts"), "src/app.ts");
+  assert.equal(pathPartOfToken("-n"), "-n");
+  assert.equal(pathPartOfToken("--- which node/npm ---"), "--- which node/npm ---", "an echo label is no flag with a glued path");
+});
+
+test("heuristic: escaped, ANSI-C, $HOME, ~user, glued values, bare cd are escapes", () => {
+  for (const cmd of ["cat \\/etc/hostname", "cat $'/etc/hostname'", "cat $HOME/.bashrc", 'cat "$HOME"/.bashrc', "cat ~root/.bashrc", "dd if=/etc/hostname", "tar -C/etc -cf - x", "cd; cat .bashrc", "cd - && ls", "true; pushd"]) {
+    assert.match(bashConfirmReason(cmd, ROOT) ?? "", /path outside project/, cmd);
+  }
+  assert.equal(bashConfirmReason("cd src && ls", ROOT), undefined);
+  assert.equal(bashConfirmReason("echo cd", ROOT), undefined);
+});
+
+test("heuristic fallback and tokenTarget: bare-word symlinks out of the project are escapes", () => {
+  const base = mkdtempSync(path.join(os.tmpdir(), "perm-bare-h-"));
+  try {
+    const root = path.join(base, "proj");
+    mkdirSync(root);
+    writeFileSync(path.join(base, "secret.txt"), "x");
+    symlinkSync(path.join(base, "secret.txt"), path.join(root, "data"));
+    writeFileSync(path.join(root, "plain"), "p");
+    assert.equal(tokenTarget("data", root, true), path.join(root, "data"));
+    assert.equal(tokenTarget("data", root, false), undefined);
+    assert.equal(tokenTarget("plain", root, true), undefined);
+    assert.equal(tokenTarget("-data", root, true), undefined);
+    assert.equal(tokenTarget("da*", root, true), undefined); // globs are not resolved
+    assert.match(bashConfirmReason("cat data | wc -c", root) ?? "", /path outside project: data/);
+    assert.equal(bashConfirmReason("cat plain", root), undefined);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("bashConfirmReason (win32 fallback): Windows-shaped tokens are judged; switches and in-project paths pass", () => {
+  const win = { platform: "win32" as const, home: "C:\\Users\\u", env: { USERPROFILE: "C:\\Users\\u" } };
+  const root = "C:\\ws\\proj";
+  assert.equal(bashConfirmReason("Remove-Item $env:USERPROFILE\\x.pdf", root, [], win), "path outside project: $env:USERPROFILE\\x.pdf");
+  assert.equal(bashConfirmReason("type ~\\.ssh\\id_rsa", root, [], win), "path outside project: ~\\.ssh\\id_rsa");
+  assert.equal(bashConfirmReason("dir /s /b src\\a", root, [], win), undefined);
+  assert.equal(bashConfirmReason("copy a C:\\Temp\\b", root, ["C:\\Temp"], win), undefined);
+  // `/tmp` is Git Bash's view of the running account's temp folder, not an escape.
+  assert.equal(bashConfirmReason('cd "$TMPDIR" 2>/dev/null || cd /tmp; curl -sS https://x.io', root, [], win), undefined);
+  assert.equal(bashConfirmReason("mktemp -d /tmp/pi.XXXX", root, [], win), undefined);
+  assert.equal(bashConfirmReason("cat /tmpx/secret", root, [], win), "path outside project: /tmpx/secret");
+  assert.equal(bashConfirmReason("runas /user:Administrator cmd", root, [], win), "privilege escalation");
+  assert.equal(bashConfirmReason("gsudo id", root, [], win), "privilege escalation");
+});

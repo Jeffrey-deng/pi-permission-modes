@@ -1,0 +1,309 @@
+# Security model
+
+`permission-mode` gates the agent's filesystem/bash access and adds an OS-level
+sandbox. This document states what it does and does **not** protect against, so
+you can rely on it appropriately. The reference for every setting is in
+[`docs/`](docs/index.md); this file is the threat model.
+
+## Two layers
+
+1. **Policy engine** (`allow` / `ask` / `deny`) - per-mode, per-surface decisions
+   that drive the prompt/block UX. For bash, commands are parsed with
+   **tree-sitter** (a real AST), so privilege escalation and out-of-project paths
+   are detected even nested in `$(...)`, backticks, and subshells; `sh|bash|… -c
+   '…'` scripts are re-parsed recursively (depth-limited), and privilege
+   escalation is detected through known wrapper commands (`env`, `nice`,
+   `nohup`, `timeout`, `xargs`, …). Still foolable by variable-built commands
+   (`$CMD rm …`), scripts read from files, and shell globs or brace
+   expansion (`cat .en?`, `cat .env{,}` are matched as written, not as what
+   the shell expands them to). If the tree-sitter grammar can't
+   load, it falls back to the original token-scan heuristic
+   (`bashConfirmReason`) - **not** a shell parser, foolable by variable-built
+   paths etc. Either way this is the *prompting* layer, **not** the containment
+   boundary.
+2. **OS sandbox** (`@anthropic-ai/sandbox-runtime`) - the real enforcement for
+   in-project `bash` in the sandboxed modes: `bubblewrap` (Linux) / `sandbox-exec`
+   (macOS) confine **writes** to the profile's `allowWrite` (project + `/tmp/pi`
+   + the session's scratch directory by default) and deny reads of the profile's
+   `denyRead` secrets, regardless of what the command does. A `bash` action of
+   `allow` still runs **sandboxed**; the sandbox is what actually contains it.
+
+## Known limitations (read these)
+
+- **Reads are deny-listed, not allow-listed.** The sandbox blocks out-of-project
+  *writes* at the kernel, but reads stay broad (so build tools work) except for
+  the configured `denyRead` secrets. An out-of-project **read** in bash is gated
+  only by the AST/heuristic prompt layer - if detection misses it (e.g. a
+  variable-built path), the sandbox allows the read. Treat the project boundary
+  for reads as best-effort, and the `denyRead` list (`~/.ssh`, `~/.aws`,
+  `~/.gnupg`, `~/.netrc`, `~/.git-credentials`, `~/.pypirc`,
+  `~/.gem/credentials`, `~/.vault-token`, `~/.password-store`, and pi's own
+  `~/.pi/agent/auth.json` and `oauth.json` by default) as the hard guard. A
+  denied prompt is a refusal, not containment: a determined agent can read
+  the same file through a script it writes into the project. **Deny and
+  block** (offered on every out-of-project path prompt) turns that Deny into
+  containment for the session: every later sandboxed command carries the
+  path as extra `denyRead`, and the file tools refuse it directly. A block
+  is by path, like every `denyRead`: a second name for the same file that
+  already exists elsewhere (a hardlink, an earlier copy) is not covered, and
+  the file-tool check is lexical: `grep`/`find`/`ls` pointed at a parent
+  directory (after you allow that prompt) still read the file, and so does
+  an out-of-project command you approve (it runs unsandboxed). On macOS the
+  comparison is case-sensitive, so a differently cased spelling prompts
+  again rather than being refused. Paths the sandbox itself needs (system
+  binary and library trees, the node binary's directory, the runtime
+  package, the command-file directory) cannot be blocked. A mode
+  can invert the default with `allowRead`: deny `~` and re-open only the
+  toolchain directories (README, "Strict home"); a more specific `denyRead`
+  or a session block inside a carve-out still wins, and a project config can
+  only remove carve-outs. One deliberate exemption in the
+  bash prompt layer: an in-project symlink whose target is an *executable
+  file* outside the project (a venv's `bin/python`) is not treated as an
+  escape - executing it is the project's intent and the sandbox still confines
+  the run. Symlinks to outside directories or non-executable files remain
+  escapes, and the file tools always follow symlinks.
+- **Auto mode is a model, not a boundary.** In Auto the prompts Build would
+  show are answered by a classifier. It can be wrong in both directions; the
+  published misses in other harnesses are consent-scope errors ("clean up the
+  PR" does not name a force push) rather than missed danger, which is why
+  authorization is scored narrowly and a hard floor never passes the judge
+  (`onRefuse: "ask"` hands such a hit to you at a prompt). The judge
+  sees your own messages (the first and the last three), the approved plan,
+  the boundary, the agent's last ten tool calls and the action; never the
+  agent's prose or a tool result, so injected text cannot reach it, but a
+  task that changed mid-conversation must be in those messages. A chain of
+  individually benign steps (the published Claude Code auto mode bypass: a
+  planted module shadowing a standard-library import of a script the agent
+  wrote itself) is invisible to any per-action judge; in Auto that chain
+  still runs inside the Build sandbox and meets the network allowlist. An
+  allowed escape runs unsandboxed, like one you approve. The verdict's
+  reason is model output shown to the model; a project config cannot set
+  the judge's `guidance` or its `model`, only tighten.
+- **File tools aren't OS-sandboxed.** `read`/`edit`/`write`/… are governed by the
+  policy engine and path checks (out-of-project prompt, protected-path backstop,
+  per-surface allow/ask/deny), not bubblewrap.
+- **Approved & non-sandboxing commands run unsandboxed.** Anything you confirm,
+  any approved out-of-project command, and everything in a mode with
+  `sandbox.enabled:false` (YOLO) runs with your full permissions. Treat them as
+  fully trusted.
+- **Gating ≠ containment.** The AST/heuristic decides whether to *prompt* and
+  whether an approved command runs *unsandboxed*. A missed detection is a missed
+  prompt; in-project commands still run sandboxed, so the exposure is a missed
+  prompt, not a filesystem escape.
+- **Project configs can only tighten.** A `<project>/.pi/permission-mode.json` is
+  applied as a most-restrictive overlay (it can add `ask`/`deny`, never loosen)
+  and its sandbox is intersected/unioned stricter. It cannot change
+  `sandbox.enabled`, add modes, widen the network allowlist, or re-enable secret
+  reads. Opening an untrusted repo can't weaken your protection. A per-rule
+  `reason` is text shown to the model, so a project config cannot set one
+  (dropped with a warning): a cloned repo cannot put words in front of the
+  model through the policy.
+- **Sandbox and policy are independent.** A mode with `sandbox.enabled:false`
+  still honors its explicit bash policy. `bash:ask` prompts before an
+  unsandboxed command and `bash:deny` blocks it. YOLO runs silently because its
+  policy explicitly says `bash:allow`, not merely because containment is off.
+- **Network is a domain allowlist**, not traffic inspection - allowing a broad
+  domain permits exfiltration to it. Keep the allowlist tight. Hosts outside
+  the allowlist trigger a **live permission prompt** (deny-by-default: headless
+  sessions, dismissed prompts, and `askOnBlockedHost:false` all deny). Session
+  grants, `/net allow`, `/net open`/`alt+n`, and the model's
+  `request_network_access` tool widen the reachable set **only through an
+  explicit user action in the UI** - the model cannot grant itself access, but
+  everything you allow is exfiltration surface. The runtime refuses an allowed
+  name that resolves to loopback, link-local, this host's own addresses, or
+  a cloud metadata endpoint, so a permitted domain cannot be pointed at local
+  services through DNS. `/net open` disables the
+  allowlist entirely for the session (shown orange in the footer). Interactive
+  grants are user authority: they can reach past a project config's tightened
+  allowlist, exactly like approving an out-of-project command. "Allow forever"
+  persists to the global config against the stock+global base - a project's
+  tighten-only intersection is never baked in.
+- **Local binding is on by default, and on macOS it opens loopback.**
+  `sandbox.allowLocalBinding` (default true; a project may set it to false,
+  never back to true) lets a sandboxed command listen on a local port that
+  this machine can reach while the command runs. On macOS the runtime cannot
+  grant that without also letting sandboxed bash dial loopback directly: the
+  resolved-address guard above governs the proxy path, this is a separate,
+  explicit path past it. Loopback services are not sandboxed, so containment
+  becomes the weaker of the sandbox and the service's own authentication
+  (Postgres `trust` on loopback, the `initdb` default, is passwordless
+  superuser access for any sandboxed command: give the agent a role and a
+  password, never `trust`); a `0.0.0.0` server is LAN-reachable while it
+  runs (bind `127.0.0.1`); and on macOS a process that backgrounds itself
+  survives the command with its profile still applied, so a bound port does
+  not close with the command. Set it to false for the modes that work next
+  to a trusting loopback service. On Windows loopback is an install-time
+  mode of the firewall set (open by default; closed when every sandboxed
+  mode sets the key to false at install time), so a mode's value cannot
+  switch it and a mode that differs is told so; on Linux the sandbox's loopback is its own and nothing
+  is reachable either way ([docs/sandbox.md, Local binding](docs/sandbox.md#local-binding)).
+- **The macOS switch widens the sandbox on purpose.** `sandbox.macos` is
+  off unless set, global-config only (a project may turn the switch off,
+  never on), and without effect elsewhere. `enableWeakerNetworkIsolation`
+  allows the `trustd` lookup Go programs need for TLS verification; `trustd`
+  fetches revocation and issuer URLs named in a certificate the sandboxed
+  process presents, outside the proxy and the allowlist, which is an
+  exfiltration channel the runtime itself warns about. Enable it for one
+  mode and only where the workflow needs it.
+- **The Linux switch widens the sandbox on purpose.** `sandbox.linux.allowNestedUserNamespaces`
+  is off unless set, global-config only, and lets a sandboxed command create
+  user and mount namespaces of its own, which runtime 0.0.80 and newer refuse
+  by default. A process with its own namespaces has more of the kernel's
+  attack surface available to it; the bubblewrap profile, the write bounds,
+  the masked reads and the network allowlist still apply. Prefer running the
+  program without its own sandbox (Chromium's `--no-sandbox`) inside the OS
+  sandbox, and enable the switch for one mode only where that is not offered.
+- **Subagent forwarding is best-effort.** The active mode is exported as
+  `PI_PERMISSION_MODE` and inherited by child `pi` processes (e.g. subagents),
+  which adopt it on start. A spawner that overrides the child's environment breaks
+  this; as a backstop, a **headless child with no forwarded mode starts in the
+  most restrictive mode, never YOLO** - with that mode's full policy but
+  *without* its system-prompt injection (a planning prompt would misdirect a
+  headless worker), and without re-exporting the fallback to its own children
+  (they derive the same fallback themselves). Don't rely on forwarding as a
+  security boundary - the child enforces its own modes regardless.
+- **Sandbox-writable directories are in-bounds, and shared.** A path under the
+  active profile's `allowWrite` (`/tmp/pi` by default), the session's scratch
+  directory, or the runtime's own `/tmp/claude` is *not* treated as an escape:
+  no prompt, and the command stays sandboxed. Everything the agent writes
+  there is plain user-owned data on a world-readable `/tmp` - the `/tmp/pi`
+  base is sticky/world-writable like `/tmp` itself and each session folder is
+  `0700`, but files an agent puts directly under the shared base are visible
+  to every pi session (and every process of your user) on the host. Don't
+  route secrets through temp files. A global/project config that drops
+  `/tmp/pi` from `allowWrite` narrows the shared part; the session folder
+  itself is **always** writable and in-bounds (the extension appends it to
+  the profile - a project config cannot remove it).
+- **The runtime has write paths of its own.** `@anthropic-ai/sandbox-runtime`
+  unconditionally allows writes to `/tmp/claude` (and points `TMPDIR` there
+  unless `CLAUDE_TMPDIR` is set - this extension sets it to the scratch
+  directory), `~/.npm/_logs`, `~/.claude/debug`, and - on macOS - the user's
+  `$TMPDIR` under `/var/folders/…`. These are not in your config and cannot be
+  removed from it; only `/tmp/claude` is treated as in-bounds by the prompt
+  layer, the others still prompt.
+- **Temp-dir narrowing is enforced on Linux and Windows, partial on macOS.**
+  On Linux only `allowWrite` (plus the runtime's built-ins) is writable - a
+  tool that hardcodes `/tmp` and ignores `TMPDIR` fails silently (the kernel
+  denies it; the awareness prompt tells the model to ask you). On macOS the
+  per-user `/var/folders/…` temp dir stays writable regardless. On Windows
+  the sandbox account's own `%TEMP%` is writable (it is not yours) and
+  `TMPDIR`, `TEMP` and `TMP` point at the scratch directory under your
+  `%TEMP%\pi`.
+- **Scratch sweep is hygiene, not a guarantee.** At session start, sibling
+  folders under the scratch base untouched for 7 days are deleted (directories
+  only - files and symlinks are skipped, never followed; another user's
+  folder can't be deleted and is skipped). It keys on directory mtime. Treat
+  the scratch base as ephemeral and don't rely on the sweep to remove
+  anything sensitive.
+- **Platform**: Linux (needs `bubblewrap`, `socat`, `ripgrep`), macOS, and
+  native Windows (alpha, needs Git for Windows and one elevated
+  `/sandbox install`). Until the Windows backend is installed, or when its
+  self-check fails, the sandboxed modes degrade to prompting only, the
+  network allowlist is not enforced, and `allowWrite` only feeds the prompt
+  bounds.
+- **Windows (alpha) is a different mechanism.** Commands run as the local
+  account `srt-sandbox` in Git Bash; the mode's profile becomes NTFS
+  permission entries for that account and the allowlist is enforced by a
+  Windows Filtering Platform rule keyed on it. The backend only adds entries
+  for that account, so it is as tight as the permissions already on the
+  machine: before trusting it the extension probes the project's parent and
+  the drive root from inside the sandbox and prompts instead when they are
+  writable (a folder created at a drive root grants every local user
+  Modify). Reads are allow-listed by the OS there: the stock profiles grant
+  the project and, without the install's profile read grant, the per-user
+  tool roots that exist, nothing else of your profile; with the grant
+  (asked at `/sandbox install`, default Yes, per machine and user) the
+  profile is readable minus the runtime's exclusion list of credential
+  stores, which no mode can reopen except an `allowRead` that names one on
+  purpose, and a write root that holds one is refused. So the credential
+  list holds by construction either way, and denies outside the grants are
+  dropped. The grant is the trade to know: it applies to every sandboxed
+  session on the machine, whatever its mode, and it makes the package-feed
+  sign-ins in `.npmrc` and the pip, NuGet, Maven and Gradle configuration
+  readable on purpose; answer No on a shared machine. Known gaps, all
+  inherited from the runtime: the proxy token is visible to local
+  principals that can inspect the runner's command line, DNS lookups are
+  not fenced (connections are), revocation checks cannot leave the fence
+  (git and cargo are told to skip them inside the sandbox) and Schannel
+  clients (curl in both builds, PowerShell, .NET) cannot do TLS at all
+  under the write-restricted token, and the sandboxed command's environment is your
+  shell environment minus identity, path, temp, proxy and CA variables, the
+  same exposure as on Linux
+  ([docs/sandbox.md, Windows](docs/sandbox.md#windows)). One difference
+  is deliberate and useful: with loopback open at install (the default), a
+  server a sandboxed command starts is reachable from the host while the
+  command runs (previews, tests), and ends with it. The
+  cost to know: bound to `0.0.0.0` it answers on the LAN as far as Windows
+  Firewall allows, so servers belong on `127.0.0.1`. macOS reaches such a
+  server through `sandbox.allowLocalBinding` (on by default); Linux (private
+  network namespace) reaches a background shell's server through bash's
+  `expose` relay only (next bullet).
+- **Background shells.** A shell started with `run_in_background` shares
+  bash's containment: the same policy gate and prompts before it starts,
+  the same sandbox profile, the same violation reporting; an escape you
+  approve runs unsandboxed, as a foreground escape would. It keeps the
+  profile and the network allowlist it was launched with (registered with
+  the runtime under its own id, so a later switch to a narrower mode does
+  not narrow it; a wider one widens it). No shell survives a runtime
+  restart: a switch that needs one asks and stops them first, a session end
+  stops them before the reset, and a `/reload` hands them to the next
+  extension instance together with the runtime they run under, which keeps
+  their profile in force for every command until they end. On Linux the
+  `expose` parameter is a deliberate inbound path into the sandbox: a
+  listener on this machine (loopback unless you confirm `0.0.0.0`, once
+  per port and session) whose connections a relay inside the shell dials
+  to the shell's own loopback. It carries bytes only, in one direction of
+  initiative (host to shell), and ends with the shell; the shell's outbound
+  network stays behind the proxy. While a shell exposes a port, the agent's
+  own foreground commands reach that port as well (a listener inside each
+  command hands connections to pi, which pipes them into the shell's
+  exposed address on this machine):
+  loopback only, between two sandboxes of the same session, bounded by the
+  shell's lifetime, with no allowlist entry and nothing to revoke
+  ([docs/shells.md](docs/shells.md)).
+- **Pinned directories on Linux.** Every existing ancestor of a path the
+  sandbox protects (a denied read, a mandatory-deny dotfile, the runtime's
+  own binds) is a mount point inside the sandbox. Renaming or removing such a
+  directory from inside a sandboxed command fails with `EBUSY`, and `rm -rf`
+  of a nested repository leaves its `.git/hooks` and the pinned directories
+  behind. This is how bubblewrap works, not a containment gap; run the
+  removal outside the sandbox (it prompts) if you really mean it.
+- **Masked dotfiles are devices inside the sandbox.** The runtime hides the
+  absent protected dotfiles at the project root (`.bashrc`, `.gitconfig`,
+  ...) by binding `/dev/null` over them, so inside a sandboxed command they
+  exist as character devices: `git add -A` at the root refuses them (add by
+  name instead, or list them in the repository's `.git/info/exclude`), and a
+  tool that stats them sees a device, not a missing file. Harmless for
+  containment; noted so nobody files it as a leak.
+- **Symlinks reached through a glob or a changed directory are not resolved
+  by the bash prompt layer.** A bare name that is a symlink out of the
+  project (`cat data` with `data -> ~/secret.txt`) is an escape and prompts,
+  but `cat *` or `cd sub && cat data` are judged by the names as written.
+  The sandbox then allows the read unless `denyRead` covers the target;
+  keep secrets in `denyRead` (or use a strict-home mode) rather than
+  relying on the prompt.
+- **Violation reports are best effort.** The `<sandbox_violations>` block is
+  diagnostic output for the model, gathered by observers that run beside the
+  sandbox (a seccomp write observer on Linux, the system sandbox log on
+  macOS). A refusal that goes unreported is still a refusal; the sandbox
+  never depends on the observers.
+
+## Reporting a vulnerability
+
+Please report security issues **by email to the maintainer** (address in
+[`package.json`](package.json)) - GitHub issues are public, so don't open one
+with exploit details. Include the mode, platform, and a minimal reproduction.
+Non-sensitive hardening ideas are welcome as regular
+[issues](https://github.com/wynainfo/pi-permission-modes/issues).
+
+## Acknowledgements
+
+- **Sandbox/policy downgrade via project config** (fixed in 2.1.2) - reported
+  by Magnus Gille (https://gille.ai/).
+- **Bash `ask`/`deny` policy bypass via a newline in a command argument**
+  (fixed in 2.2.1) - reported by dyoon98-creator (https://github.com/dyoon98-creator);
+  independently found and fixed in PR #5 by BeLeap (https://github.com/BeLeap)
+  and in PR #6 by hsiangron (https://github.com/hsiangron).
+- **Bash `ask`/`deny` rules and the `path` gate bypassed in unsandboxed modes
+  by chained, prefixed, or piped commands** (fixed in 2.4.3) - reported by
+  donnielrt (https://github.com/donnielrt) in #26 and #21.
