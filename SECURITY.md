@@ -30,6 +30,12 @@ you can rely on it appropriately. The reference for every setting is in
 
 ## Known limitations (read these)
 
+- **`/sandbox off` is an explicit opt-out of the OS layer.** It is session
+  scoped and leaves the mode, its policy prompts, the file-tool checks and the
+  protected-path backstop in force, but bash runs with your full user rights
+  and the network is not filtered until `/sandbox on`. Treat it as a deliberate
+  reduction in protection, not as a mode. `--no-sandbox` is the process-wide
+  equivalent; YOLO removes the policy layer as well.
 - **Reads are deny-listed, not allow-listed.** The sandbox blocks out-of-project
   *writes* at the kernel, but reads stay broad (so build tools work) except for
   the configured `denyRead` secrets. An out-of-project **read** in bash is gated
@@ -294,7 +300,7 @@ Please report security issues **by email to the maintainer** (address in
 [`package.json`](package.json)) - GitHub issues are public, so don't open one
 with exploit details. Include the mode, platform, and a minimal reproduction.
 Non-sensitive hardening ideas are welcome as regular
-[issues](https://github.com/wynainfo/pi-permission-modes/issues).
+[issues](https://github.com/Jeffrey-deng/pi-permission-modes/issues).
 
 ## Acknowledgements
 

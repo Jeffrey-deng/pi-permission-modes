@@ -1,6 +1,13 @@
 # pi-permission-modes
 
-[![CI](https://github.com/wynainfo/pi-permission-modes/actions/workflows/ci.yml/badge.svg)](https://github.com/wynainfo/pi-permission-modes/actions/workflows/ci.yml)
+> **This is a fork of [wynainfo/pi-permission-modes](https://github.com/wynainfo/pi-permission-modes).**
+> It keeps the original extension and adds:
+>
+> - **`/sandbox on|off`** - turn OS sandboxing off for the whole session in every mode, or back on, while keeping permission prompts.
+> - **Allow Unsandboxed Once** - run one approved bash command outside the sandbox without granting it for the session.
+> - **Deny for Reason** - deny a permission request with your own sentence and pass it back to the model.
+
+[![CI](https://github.com/Jeffrey-deng/pi-permission-modes/actions/workflows/ci.yml/badge.svg)](https://github.com/Jeffrey-deng/pi-permission-modes/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Switchable, **user-definable** permission modes for the [pi](https://pi.dev)
@@ -16,7 +23,7 @@ boundaries so it works within them, and every blocked step points at the
 documentation that explains it. **Linux** (including WSL2), **macOS** and
 **Windows** are supported.
 
-![pi in Build mode asking before a read outside the project: Allow once, Allow for session, Deny, Deny and block; the footer shows the sandboxed mode, the filtered network and two background shells](https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/misc/screenshot-pi-permission-modes.png)
+![pi in Build mode asking before a read outside the project: Allow once, Allow for session, Deny, Deny and block; the footer shows the sandboxed mode, the filtered network and two background shells](https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/misc/screenshot-pi-permission-modes.png)
 
 The complete reference lives in [`docs/`](docs/index.md) and ships with the
 extension, so the agent can read it too. [SECURITY.md](SECURITY.md) has the
@@ -25,8 +32,13 @@ threat model, [CHANGELOG.md](CHANGELOG.md) the releases, and
 
 ## Quick start
 
+> **npm install is not available yet.** This fork has not been published to
+> npm; use the GitHub install below until it is.
+
+~~`pi install npm:pi-permission-modes`~~
+
 ```bash
-pi install npm:pi-permission-modes
+pi install git:github.com/Jeffrey-deng/pi-permission-modes
 ```
 
 On **Linux** (including **WSL2**) the sandbox also needs three system packages
@@ -43,7 +55,7 @@ sudo apt install -y bubblewrap socat ripgrep
 2. Switch to Build (`alt+m` until `Build`, or `/perm build`):
    - sandbox active -> `Build (sandboxed in project dir)`;
    - otherwise -> `Build (!) sandbox-runtime missing ...` plus a fix-it notification.
-3. `/sandbox` prints the active sandbox configuration (or why it's unavailable).
+3. `/sandbox` prints the active sandbox configuration (or why it's unavailable); `/sandbox off` turns OS sandboxing off for the rest of the session in every mode and keeps the permission prompts ([docs/sandbox.md](docs/sandbox.md#session-sandbox-switch)).
 
 ## Install
 
@@ -54,10 +66,10 @@ provided by the host. Node 22.12 or newer is required (pi itself needs
 
 ### Other install methods
 
-- `pi install git:github.com/wynainfo/pi-permission-modes` - straight from GitHub (the latest release)
-- `pi install npm:pi-permission-modes@2.7.0` - pin a version (`pi update --extensions` won't advance it)
-- `pi install git:github.com/wynainfo/pi-permission-modes@dev` - the development branch; may break between releases
-- `pi install -l npm:pi-permission-modes` - project-local install (`.pi/npm/`, shareable with your team)
+- `pi install git:github.com/Jeffrey-deng/pi-permission-modes` - straight from GitHub (the latest release)
+- ~~`pi install npm:pi-permission-modes@2.7.0`~~ - pin a version (`pi update --extensions` won't advance it); npm publishing is pending
+- `pi install git:github.com/Jeffrey-deng/pi-permission-modes@dev` - the development branch; may break between releases
+- ~~`pi install -l npm:pi-permission-modes`~~ - project-local install (`.pi/npm/`, shareable with your team); npm publishing is pending
 - `pi update --extensions` - pull the latest release, whichever way you installed
 
 ### Platform notes
@@ -119,12 +131,14 @@ the network state: `Build (sandboxed in project dir, alt+m)  Network: filtered (
 | `/plan approve`, `/plan status` | Plan approval |
 | `/shells` | List and stop background shells |
 | `/sandbox` | The active sandbox configuration |
+| `/sandbox off`, `/sandbox on` | Disable OS sandboxing for this session in every mode (policy prompts stay), or restore it |
 | `pi --perm <mode>`, `pi --no-sandbox` | Start mode; keep the modes, drop OS sandboxing |
 
 Network requests to hosts outside the allowlist **pause while you're asked**
 (allow for the session or forever, or deny); the model can also ask for hosts
 up front with `request_network_access`
-([docs/network.md](docs/network.md)). Prompts for an out-of-project path
+([docs/network.md](docs/network.md)). **Deny for Reason** hands your own
+sentence to the model instead of letting it guess. Prompts for an out-of-project path
 offer **Deny and block**, which masks the path for the rest of the session
 ([docs/permissions.md](docs/permissions.md#deny-and-block)). Git over SSH
 cannot authenticate inside the sandbox (`~/.ssh` is masked); use HTTPS with a
@@ -149,7 +163,8 @@ Two independent layers compose:
    command does ([docs/sandbox.md](docs/sandbox.md)).
 
 So a `bash` command that policy says `allow` still runs **sandboxed**; `ask`
-prompts, then runs sandboxed, or **unsandboxed** for an escape you approve;
+prompts, then runs sandboxed, or **unsandboxed** for an escape you approve
+(or **Allow Unsandboxed Once** for that one in-project command);
 `deny` never runs. Only the model's `bash` tool is OS-sandboxed; the file
 tools are governed by the policy engine and the protected-path backstop.
 While a sandboxed mode is active, the model is told its boundaries in the
@@ -184,7 +199,7 @@ Build its own network allowlist and asks before every `rm`:
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/schemas/permission-mode.schema.json",
   "modes": {
     "build": {
       "sandbox": { "network": { "allowedDomains": ["github.com", "*.github.com", "registry.npmjs.org"] } },
@@ -218,5 +233,5 @@ and the outdated-default warnings: [docs/configuration.md](docs/configuration.md
 - Temporarily: launch pi with `--no-extensions` (disables all), or `--no-sandbox`
   to keep the modes but drop OS sandboxing.
 - Permanently: `pi remove npm:pi-permission-modes` (or
-  `git:github.com/wynainfo/pi-permission-modes`, matching how you installed
+  `git:github.com/Jeffrey-deng/pi-permission-modes`, matching how you installed
   it) - or remove the entry from your pi settings.

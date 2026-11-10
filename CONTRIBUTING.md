@@ -11,14 +11,14 @@ Thanks for your interest in improving `permission-mode`!
 To run the development version yourself:
 
 ```bash
-pi install git:github.com/wynainfo/pi-permission-modes@dev
+pi install git:github.com/Jeffrey-deng/pi-permission-modes@dev
 pi update --extensions   # later: pull the latest dev commits
 ```
 
 ## Dev setup
 
 ```bash
-git clone -b dev https://github.com/wynainfo/pi-permission-modes.git
+git clone -b dev https://github.com/Jeffrey-deng/pi-permission-modes.git
 cd pi-permission-modes
 npm install            # installs @anthropic-ai/sandbox-runtime + dev tooling
 ```
@@ -32,6 +32,18 @@ Try it without installing into your config:
 ```bash
 pi -e ./src/index.ts
 ```
+
+If a released copy is already installed (or discovered through
+`~/.pi/agent/extensions`), that run reports tool and flag conflicts. Add
+`-ne` so Pi loads only this checkout:
+
+```bash
+pi -ne -e ./src/index.ts
+```
+
+`-e` is for quick iteration; restart pi after editing the file. Put the
+extension in a discovered location only if you need `/reload` to pick changes
+up in a live session.
 
 ## Tests & typecheck
 

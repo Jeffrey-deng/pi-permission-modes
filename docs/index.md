@@ -34,6 +34,7 @@ model and known limitations), [CHANGELOG.md](../CHANGELOG.md),
 | `/net status`, `/net allow <domain...>`, `/net open`, `/net restrict`, `/net reset` | Network allowlist, session grants, the open toggle |
 | `/plan approve`, `/plan status` | Approve the pending plan, or name it |
 | `/sandbox` | Print the active sandbox configuration, or why the sandbox is unavailable |
+| `/sandbox off`, `/sandbox on` | Turn OS sandboxing off for this session in every mode (the policy prompts stay), or back on |
 | `/sandbox install`, `/sandbox uninstall` | Windows: set up or remove the native sandbox (one UAC prompt each) |
 | `/shells`, `/shells stop <id|all> [signal]`, `/shells logs <id> [lines]`, `/shells clean` | Background shells: list, stop, read, tidy up |
 | `pi --perm <mode>` | Start in a given mode |

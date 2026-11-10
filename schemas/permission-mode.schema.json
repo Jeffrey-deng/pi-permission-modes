@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+  "$id": "https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/schemas/permission-mode.schema.json",
   "title": "permission-mode configuration",
   "description": "Declarative permission modes for the pi coding agent. Global config has full authority; project config (.pi/permission-mode.json) is tighten-only.",
   "type": "object",

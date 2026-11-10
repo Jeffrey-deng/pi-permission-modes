@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`/sandbox off` and `/sandbox on`.** A session-wide kill switch for OS
+  sandboxing: while off, every mode runs bash on the host, and the mode's
+  permission prompts, file approvals, protected-path block and
+  `external_directory` prompts stay in force, so the extension becomes a plain
+  permission layer. The runtime stays initialized (`/sandbox on` needs no
+  re-initialization), running background shells keep the sandbox they started
+  under, and the state is session-scoped. `/sandbox` names it and the footer
+  shows `(sandbox off for this session)`. Different from `--no-sandbox` (a
+  process-wide disable that still uses the "sandbox unavailable" prompt path)
+  and from YOLO (no policy either). `docs/sandbox.md`, "Session sandbox switch".
+- **Allow Unsandboxed Once.** Every bash prompt in a sandboxed mode offers it
+  after "Allow for session": one command runs on the host, with no session
+  grant, while the next identical command asks again and runs sandboxed. It is
+  offered only where approval would otherwise run sandboxed (escapes and the
+  degraded fallback already run unsandboxed). `docs/sandbox.md`.
+- **Deny for Reason.** Every permission prompt can deny with a sentence the
+  user types instead of a bare Deny: the text is handed to the model in the
+  tool result (or the `<sandbox_network>` note for a live host prompt), so it
+  follows the reason instead of guessing. `docs/permissions.md`.
+
 ## [2.8.0]
 
 ### Added

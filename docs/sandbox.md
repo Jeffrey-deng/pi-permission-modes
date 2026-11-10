@@ -8,6 +8,45 @@ The OS sandbox is the real enforcement for the bash tool. When a mode's
 proxy, whatever the command does. Only bash is sandboxed; the file tools are
 policy-gated ([permissions.md](permissions.md)).
 
+## Session sandbox switch
+
+`/sandbox off` turns OS sandboxing off for the rest of the session in
+**every** mode; `/sandbox on` turns it back on. It is a session switch, not a
+mode and not a config change: the mode keeps its label, its policy, its file
+approvals and its protected-path block, but bash runs on the host, the network
+is not filtered, and the sandbox's write/read bounds do not apply. The runtime
+stays initialized, so switching back needs no re-initialization. Like the
+network toggle, the switch is not persisted: a new session or `/reload` starts
+with it on. Background shells already running keep the sandbox they started
+under; the same holds in reverse for shells started while the switch was off
+(`/sandbox on` does not move them into the sandbox).
+
+This is for the commands the sandbox itself breaks (a system tool that needs a
+privileged path, a git hook, a program that cannot work in a namespace). It
+turns the extension into a plain permission layer. Contrast:
+
+- `pi --no-sandbox` disables the sandbox for the whole process and still goes
+  through the "sandbox unavailable" prompt path ([troubleshooting.md](troubleshooting.md#sandbox-unavailable)).
+- YOLO has no sandbox and no policy at all; `/sandbox off` keeps the policy.
+- A mode's `sandbox.enabled: false` is a permanent property of that mode.
+
+While the session switch is off, an out-of-project bash command still asks
+through `external_directory` (in Build too), and all file-tool prompts and
+protected-path blocks are unchanged. `/sandbox` names the state and `/sandbox
+on` restores the mode's profile.
+
+## Allow Unsandboxed Once
+
+Every bash prompt in a sandboxed mode offers **Allow Unsandboxed Once** right
+after **Allow for session**. It approves this one command to run on the host
+without a session grant; the next identical command asks again and runs
+sandboxed. On the host the command has the user's full rights: no write or
+read bounds and no network proxy. It appears only where the approved command
+would otherwise be sandboxed: an escape or a "sandbox unavailable" prompt
+already runs unsandboxed, so it gets no redundant option. Use it when one
+command needs the real filesystem or a tool the sandbox breaks, without
+dropping the sandbox for the session (`/sandbox off`).
+
 ## Keys
 
 All keys live under a mode's `sandbox` block. "Project" says what a project

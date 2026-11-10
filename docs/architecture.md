@@ -49,7 +49,9 @@ shape of the code.
    refusal blocks with the verdict or, with `onRefuse: "ask"` or a tripped
    breaker, falls through to the prompt. The network ask callback does the
    same for a host, with the commands in flight.
-   An approved escape is remembered by tool call id and runs unsandboxed.
+   An approved escape is remembered by tool call id and runs unsandboxed, as
+   is an "Allow Unsandboxed Once" choice on an in-project ask. `/sandbox off`
+   skips the wrapper for every mode while keeping this policy flow intact.
 3. **file tools**: a session block refuses first; then `decide` with the
    surface, the `path` gate, and `external_directory` when the path is
    outside the project; `ask` prompts, `deny` blocks.

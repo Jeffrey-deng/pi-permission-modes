@@ -32,6 +32,10 @@ In every mode except YOLO:
   directory, the runtime's `/tmp/claude`) count as in-bounds: a temp file
   there is not an escape.
 
+`/sandbox off` disables the OS sandbox for the whole session, in every mode,
+and leaves these policy rules in force
+([sandbox.md, Session sandbox switch](sandbox.md#session-sandbox-switch)).
+
 All sandboxed modes share the same `denyRead` list (credential files and pi's
 own `auth.json` and `oauth.json`) and the same network allowlist (package
 registries and GitHub). See `permission-mode.defaults.json` for the exact

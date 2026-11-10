@@ -4,14 +4,14 @@
   "type": "module",
   "description": "Switchable, user-definable permission modes for the pi coding agent. Each mode pairs an OS-level sandbox (bubblewrap, sandbox-exec, native Windows) with an allow / ask / deny policy for every tool. Default, Plan Mode, Build and YOLO ship; retune them or add your own. Live network prompts, plan approval, background shells with port exposure.",
   "license": "MIT",
-  "author": "Nico Merz <nico.merz@wyna-informatik.ch>",
-  "homepage": "https://github.com/wynainfo/pi-permission-modes#readme",
+  "author": "Jeffrey Deng <jeffrey.c.deng@gmail.com>",
+  "homepage": "https://github.com/Jeffrey-deng/pi-permission-modes#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wynainfo/pi-permission-modes.git"
+    "url": "git+https://github.com/Jeffrey-deng/pi-permission-modes.git"
   },
   "bugs": {
-    "url": "https://github.com/wynainfo/pi-permission-modes/issues"
+    "url": "https://github.com/Jeffrey-deng/pi-permission-modes/issues"
   },
   "keywords": [
     "pi",
@@ -52,8 +52,7 @@
   "pi": {
     "extensions": [
       "./src/index.ts"
-    ],
-    "video": "https://github.com/wynainfo/pi-permission-modes/releases/download/v2.7.2/pi-permission-modes-demo-web.mp4"
+    ]
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.81",

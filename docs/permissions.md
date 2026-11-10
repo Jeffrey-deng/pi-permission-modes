@@ -158,9 +158,14 @@ do instead:
 
 ## Session approvals
 
-When a mode asks, the prompt offers **Allow once / Allow for session / Deny**
-(plus **Allow forever** for tools and skills). "Allow for session" remembers
-that action per mode for the rest of the session. For bash the grant is keyed
+When a mode asks, the prompt offers **Allow once / Allow for session / Deny /
+Deny for Reason** (plus **Allow forever** for tools and skills, and **Allow
+Unsandboxed Once** for bash in a sandboxed mode). "Allow for session" remembers
+that action per mode for the rest of the session. "Deny for Reason" asks you for
+a sentence and hands it to the model in the tool result, so it adapts to your
+reason instead of guessing why it was refused. "Allow Unsandboxed Once" runs
+that one command on the host and remembers nothing
+([sandbox.md, Allow Unsandboxed Once](sandbox.md#allow-unsandboxed-once)). For bash the grant is keyed
 on the command names extracted from the chain, and every name must already be
 granted for a command to pass silently: approving `git` does not cover a
 later `git status && curl ... | sh`; approving that chain grants `git` and

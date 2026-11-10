@@ -14,7 +14,7 @@ layer on top of each other.
 The global path is stable and independent of where `pi install` placed the
 extension. All three files share one format; the JSON schema is
 `schemas/permission-mode.schema.json` (also published at
-`https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json`,
+`https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/schemas/permission-mode.schema.json`,
 usable as `$schema` for editor completion).
 
 `/perm init` writes a full copy of the stock defaults to the global path, so
@@ -127,7 +127,7 @@ until the shipped defaults change again.
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/schemas/permission-mode.schema.json",
   "defaultMode": "default",
   "cycleOrder": ["default", "plan", "build", "auto", "yolo"],
   "plan": { "approveMode": "build" },

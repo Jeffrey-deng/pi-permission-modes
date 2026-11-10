@@ -34,7 +34,9 @@ reach loopback on macOS through `sandbox.allowLocalBinding`, on by default
 
 A request to a host outside the allowlist is not a silent wall. With
 `askOnBlockedHost` true (the default), the connection pauses while you are
-asked: **Allow for session / Allow forever / Deny**. The answer is also
+asked: **Allow for session / Allow forever / Deny / Deny for Reason**. "Deny
+for Reason" takes a sentence from you; the model sees it in the
+`<sandbox_network>` block. The answer is also
 told to the model, in a `<sandbox_network>` block at the end of that
 command's output, so it knows a person decided and does not read a
 working connection as an open network. Then it proceeds or
