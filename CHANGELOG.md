@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.8.0]
+
 ### Added
 - **Auto mode.** A fifth stock mode between Build and YOLO: Build, but what
   Build would ask you about (a bash escape, a file tool outside the project,
