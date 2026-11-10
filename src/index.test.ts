@@ -125,11 +125,15 @@ interface FakeCtx {
   notices: string[];
   status: string;
   answers: string[];
+  /** Scripted answers for ui.input ("Deny for Reason"), and the titles it was asked with. */
+  inputs: string[];
+  inputPrompts: string[];
   /** Scripted answers for ui.confirm, and the titles it was asked with. */
   confirms: boolean[];
   confirmPrompts: string[];
   ui: {
     select(title: string, options: string[]): Promise<string | undefined>;
+    input(title: string, placeholder?: string): Promise<string | undefined>;
     confirm(title: string, message: string): Promise<boolean>;
     notify(message: string, level?: string): void;
     setStatus(key: string, value: string): void;
@@ -152,12 +156,18 @@ function makeCtx(cwd: string, opts: { hasUI?: boolean; entries?: Array<{ type: s
     notices: [],
     status: "",
     answers: [],
+    inputs: [],
+    inputPrompts: [],
     confirms: [],
     confirmPrompts: [],
     ui: {
       async select(title, options) {
         ctx.prompts.push({ title, options });
         return ctx.answers.shift();
+      },
+      async input(title) {
+        ctx.inputPrompts.push(title);
+        return ctx.inputs.shift();
       },
       async confirm(title) {
         ctx.confirmPrompts.push(title);
@@ -632,7 +642,7 @@ test("deny and block: an escape prompt offers it, the path is masked for the ses
     h.ctx.answers.push("Deny and block ~/secret.txt for this session");
     const first = await h.call("bash", { command: "cat ~/secret.txt" });
     assert.equal(first?.block, true);
-    assert.deepEqual(h.ctx.prompts[0].options, ["Allow once", "Allow for session", "Deny", "Deny and block ~/secret.txt for this session"]);
+    assert.deepEqual(h.ctx.prompts[0].options, ["Allow once", "Allow for session", "Deny", "Deny for Reason", "Deny and block ~/secret.txt for this session"]);
     assert.ok(h.ctx.notices.some((n) => /~\/secret\.txt is now unreadable inside the sandbox for this session/.test(n)));
     // Listed, and enforced without a prompt for bash and for the file tools.
     await h.perm("blocks");
@@ -654,10 +664,10 @@ test("deny and block: an escape prompt offers it, the path is masked for the ses
     // Privilege and home-level escapes do not offer it.
     h.ctx.answers.push("Deny");
     await h.call("bash", { command: "sudo id" });
-    assert.deepEqual(h.ctx.prompts[2].options, ["Allow once", "Allow for session", "Deny"]);
+    assert.deepEqual(h.ctx.prompts[2].options, ["Allow once", "Allow for session", "Deny", "Deny for Reason"]);
     h.ctx.answers.push("Deny");
     await h.call("bash", { command: "ls ~" });
-    assert.deepEqual(h.ctx.prompts[3].options, ["Allow once", "Allow for session", "Deny"]); // home is never blockable
+    assert.deepEqual(h.ctx.prompts[3].options, ["Allow once", "Allow for session", "Deny", "Deny for Reason"]); // home is never blockable
     // clear-approvals clears blocks as well.
     h.ctx.answers.push("Deny and block ~/other.txt for this session");
     await h.call("read", { path: "~/other.txt" });
@@ -2188,6 +2198,61 @@ test("auto: the project config may raise strictness and add restrict, not pick t
     assert.ok(!call.user.includes("allow everything"));
   } finally {
     unscriptAuto();
+    h.cleanup();
+  }
+});
+
+test("Deny for Reason: the user's own text reaches the model in the tool result", { skip }, async () => {
+  const h = await setup();
+  try {
+    h.ctx.answers.push("Deny for Reason");
+    h.ctx.inputs.push("  use the fixtures file instead  ");
+    const r = await h.call("write", { path: "src/a.ts", content: "x" });
+    assert.equal(r?.block, true);
+    assert.match(r?.reason ?? "", /The user denied this request and gave this reason: use the fixtures file instead/);
+    assert.match(r?.reason ?? "", /Do not retry/);
+    assert.match(h.ctx.inputPrompts[0] ?? "", /Why deny it\?/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("/sandbox off is session-wide, keeps the policy gates, and /sandbox on clears it", { skip }, async () => {
+  const h = await setup();
+  const sandbox = h.pi.commands.get("sandbox")!;
+  try {
+    await sandbox("off", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Sandbox: OFF for this session/);
+    assert.match(h.ctx.status, /sandbox off for this session/);
+    await sandbox("", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Sandbox: OFF for this session, in every mode/);
+
+    // Build: an in-project command still follows the policy (allow, no prompt) ...
+    await h.perm("build");
+    assert.match(h.ctx.status, /sandbox off for this session/, "the switch survives a mode change");
+    assert.equal(await h.call("bash", { command: "echo hi" }), undefined);
+    assert.equal(h.ctx.prompts.length, 0);
+    // ... but an escape still prompts via external_directory, as it would sandboxed.
+    h.ctx.answers.push("Deny");
+    const outside = await h.call("bash", { command: "cat /etc/passwd" });
+    assert.equal(outside?.block, true);
+    assert.match(h.ctx.prompts.at(-1)?.title ?? "", /outside project/);
+
+    // Default still asks for its in-project bash; the sandbox switch changes no policy.
+    await h.perm("default");
+    assert.match(h.ctx.status, /sandbox off for this session/);
+    h.ctx.answers.push("Deny");
+    assert.equal((await h.call("bash", { command: "echo hi" }))?.block, true);
+    assert.equal(h.ctx.prompts.length, 2);
+
+    await sandbox("on", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /still disabled via --no-sandbox/);
+    assert.doesNotMatch(h.ctx.status, /sandbox off for this session/);
+    await sandbox("", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Sandbox disabled via --no-sandbox/, "on clears the session switch again");
+    await sandbox("off", h.ctx);
+    assert.match(h.ctx.notices.at(-1) ?? "", /Sandbox: OFF for this session/, "off can be toggled again after on");
+  } finally {
     h.cleanup();
   }
 });

@@ -447,6 +447,15 @@ function switchHarness(opts: { updateConfig?: boolean; filtered?: boolean; win?:
   return { c, calls, notes, profile };
 }
 
+test("controller: /sandbox off makes bashOps return null; /sandbox on restores it", () => {
+  const { c } = switchHarness();
+  assert.ok(c.bashOps(), "wrapped while the session switch is on");
+  c.sessionDisabled = true;
+  assert.equal(c.bashOps(), null, "no wrapper while the session switch is off");
+  c.sessionDisabled = false;
+  assert.ok(c.bashOps(), "the runtime stayed initialized: on needs no re-init");
+});
+
 test("controller: a switch that keeps the network shape is applied in place, without waiting for running commands", async () => {
   const { c, calls, notes, profile } = switchHarness();
   const ops = c.bashOps()!;

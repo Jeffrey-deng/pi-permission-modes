@@ -56,6 +56,17 @@ test("updateStatus: the warn is suppressed under --no-sandbox, and a mode withou
   assert.equal(c.status, "Build (alt+m)  Network: open", "not ready and no reason yet: plain, and the open toggle is not shown as a chip");
 });
 
+test("updateStatus: /sandbox off is named in the chip and suppresses the sandbox warn", () => {
+  const c = ctx();
+  updateStatus(
+    c as never,
+    mode({ enabled: true, writable: true, network: { allowedDomains: ["a.com"] } }),
+    { ready: true, warn: "some warning", disabled: false, sessionDisabled: true },
+    false,
+  );
+  assert.equal(c.status, "Build (sandbox off for this session, alt+m)  Network: open");
+});
+
 test("updateStatus: a pending verdict shows (judging...) in place of the sandbox text", () => {
   const c = ctx();
   const mode = { label: "Auto", color: "warning", sandbox: { enabled: true, writable: true, network: { allowedDomains: ["a"] } }, permission: {} } as never;

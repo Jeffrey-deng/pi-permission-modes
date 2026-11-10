@@ -70,7 +70,7 @@ export function normalizeDomain(raw: string): string | undefined {
 export interface PromptedHost {
   host: string;
   result: NetAskResult;
-  /** The verdict's reason, for the classifier's answers. */
+  /** A reason for the answer: the Auto verdict's, or the user's "Deny for Reason" text. */
   reason?: string;
 }
 
@@ -88,7 +88,7 @@ export function promptNote(prompted: readonly PromptedHost[]): string {
       case "allow-forever":
         return `the user was asked and allowed ${p.host} for this mode permanently`;
       case "deny":
-        return `the user was asked and denied ${p.host} for this session: do not retry it, ask the user if it is needed`;
+        return `the user was asked and denied ${p.host} for this session${p.reason ? ` (reason: ${p.reason})` : ""}: do not retry it, ask the user if it is needed`;
       case "allow-command":
         return `the Auto verdict allowed ${p.host} for this command${p.reason ? `: ${p.reason}` : ""}`;
       case "refuse":

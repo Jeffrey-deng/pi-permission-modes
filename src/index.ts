@@ -41,7 +41,7 @@
  *   auto/           the Auto classifier: verdict.ts (pure), precheck.ts, classifier.ts (the model call)
  *
  * Install (see README.md):
- *   pi install git:github.com/wynainfo/pi-permission-modes
+ *   pi install git:github.com/Jeffrey-deng/pi-permission-modes
  *   Linux also needs: bubblewrap, socat, ripgrep
  */
 
@@ -83,7 +83,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { docRef, docsDir, docsPromptBlock, piReferencePaths } from "./docs.ts";
 import { withGitHubTokenHelper } from "./git-auth.ts";
-import { askWithSession, BlockedPaths, deniedByUser, type DenyOption, SessionApprovals } from "./approvals.ts";
+import { askWithSession, BlockedPaths, deniedByUser, deniedByUserWithReason, type DenyOption, SessionApprovals } from "./approvals.ts";
 import { localBindingNote, sandboxAwarenessPrompt } from "./awareness.ts";
 import { PROFILE_GRANT_QUESTION, profileExclusions, profileGrantText } from "./sandbox-win.ts";
 import { type PromptParts, writePromptSections } from "./prompt-sections.ts";
@@ -275,6 +275,8 @@ export default async function (pi: ExtensionAPI) {
   const runtimeProfile = (m: ModeDef): SandboxProfile => withScratchDir(platformProfile(m.sandbox), scratchDir);
   // What bash effectively runs under, for the bounds, the awareness prompt, and /sandbox.
   const effectiveSandbox = (m: ModeDef): SandboxProfile => withDeniedReads(runtimeProfile(m), blocked.list());
+  /** Whether this mode's OS sandbox actually wraps bash right now (`/sandbox off` is session-wide). */
+  const sandboxActive = (m: ModeDef): boolean => m.sandbox.enabled && !sandbox.disabled && !sandbox.sessionDisabled;
 
   const sandbox = new SandboxController();
   if (process.platform === "linux") {
@@ -517,7 +519,7 @@ export default async function (pi: ExtensionAPI) {
         allowWrite: (eff.allowWrite ?? []).map((w) => (w === "." ? root : w)),
         denyRead: eff.denyRead ?? [],
         allowedDomains: eff.network?.allowedDomains,
-        sandboxActive: sandbox.ready && !sandbox.disabled,
+        sandboxActive: sandboxActive(currentMode()) && sandbox.ready,
       },
       trail: trailFromEntries(entries),
       action,
@@ -577,11 +579,10 @@ export default async function (pi: ExtensionAPI) {
     // nothing to apply to, so the prompt is dismissed (denied, not remembered).
     const gone = new AbortController();
     void sandbox.idle().then(() => gone.abort());
-    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) - allow?${verdictLine}`, [
-      "Allow for session",
-      "Allow forever",
-      "Deny",
-    ], { signal: gone.signal });
+    net.lastReason = undefined; // a reason belongs to the answer given below, not an earlier verdict
+    const options = ["Allow for session", "Allow forever", "Deny"];
+    if (typeof ctx.ui.input === "function") options.push("Deny for Reason");
+    const choice = await ctx.ui.select(`Network: bash wants to reach ${target} (not in the allowlist) - allow?${verdictLine}`, options, { signal: gone.signal });
     if (choice === "Allow for session") return "allow-session";
     if (choice === "Allow forever") {
       try {
@@ -592,6 +593,12 @@ export default async function (pi: ExtensionAPI) {
         ctx.ui.notify(`permission-mode: could not save domain: ${e}`, "error");
       }
       return "allow-forever";
+    }
+    if (choice === "Deny for Reason") {
+      const raw = typeof ctx.ui.input === "function" ? await ctx.ui.input("Why deny it? (the model is told this reason)", "e.g. use the internal mirror instead") : undefined;
+      const reason = raw?.trim();
+      if (reason) net.lastReason = reason;
+      return "deny";
     }
     if (choice === "Deny") return "deny";
     return "dismiss"; // dismissed prompt: deny this request, but don't remember
@@ -608,6 +615,8 @@ export default async function (pi: ExtensionAPI) {
    * a prompt, a refusal blocks with the verdict, or, with `onRefuse: "ask"` or
    * a tripped breaker, falls through to the prompt with the verdict shown.
    * A session grant is user authority and is honored before any verdict.
+   * "Deny for Reason" turns the user's own sentence into the tool result, so
+   * the model adapts to it instead of guessing why it was refused.
    */
   const promptAllow = async (
     ctx: ExtensionContext,
@@ -617,6 +626,7 @@ export default async function (pi: ExtensionAPI) {
     onForever?: () => void | Promise<void>,
     denyAnd?: DenyOption,
     judged?: { action: JudgedAction; commands?: Parameters<typeof precheck>[1] },
+    onUnsandboxedOnce?: () => void | Promise<void>,
   ): Promise<PromptResult> => {
     if (judged && autoConfig(currentMode())) {
       const targets = Array.isArray(target) ? target : [target];
@@ -626,8 +636,13 @@ export default async function (pi: ExtensionAPI) {
       if (!j.askInstead) return { allow: false, reason: j.reason };
       title = `${title} | Auto verdict: ${j.line}`;
     }
+    let denyReason: string | undefined;
     const allow = await askWithSession(
-      { hasUI: ctx.hasUI, select: (t, o) => ctx.ui.select(t, o) },
+      {
+        hasUI: ctx.hasUI,
+        select: (t, o) => ctx.ui.select(t, o),
+        input: typeof ctx.ui.input === "function" ? (t, p) => ctx.ui.input(t, p) : undefined,
+      },
       approvals,
       modeName,
       surface,
@@ -635,8 +650,12 @@ export default async function (pi: ExtensionAPI) {
       title,
       onForever,
       denyAnd,
+      onUnsandboxedOnce,
+      (reason) => {
+        denyReason = reason;
+      },
     );
-    return { allow };
+    return allow ? { allow: true } : { allow: false, ...(denyReason ? { reason: deniedByUserWithReason(denyReason) } : {}) };
   };
 
   /**
@@ -1081,7 +1100,7 @@ export default async function (pi: ExtensionAPI) {
       else ctx.ui.notify(`permission-mode: unknown mode or subcommand "${arg}"; usage: /perm [${config.cycleOrder.join("|")}|init|clear-approvals|blocks|unblock <path>|verdicts]`, "warning");
     },
   });
-  const networkEnforcing = () => sandbox.ready && networkFiltered(currentMode().sandbox);
+  const networkEnforcing = () => sandbox.ready && !sandbox.sessionDisabled && networkFiltered(currentMode().sandbox);
 
   const toggleNetwork = async (ctx: ExtensionContext) => {
     uiCtx = ctx;
@@ -1174,10 +1193,43 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("sandbox", {
-    description: "Show the active mode's sandbox status and configuration; /sandbox install|uninstall sets up the native Windows sandbox",
+    description:
+      "Show the active mode's sandbox status and configuration; /sandbox on|off toggles OS sandboxing for this session; /sandbox install|uninstall sets up the native Windows sandbox",
     handler: async (args, ctx) => {
       const m = currentMode();
       const sub = args.trim().toLowerCase();
+      // Session-wide kill switch: all modes run bash unsandboxed while off,
+      // their permission policies (and the file-tool backups) stay in force.
+      // The runtime stays initialized, so /sandbox on needs no re-init.
+      if (sub === "on" || sub === "off") {
+        const wantOff = sub === "off";
+        if (sandbox.sessionDisabled === wantOff) {
+          if (wantOff) return ctx.ui.notify("Sandbox is already off for this session (/sandbox on re-enables it)", "info");
+          if (sandbox.disabled) return ctx.ui.notify("Sandbox: the session switch is already on, but --no-sandbox still disables the sandbox", "info");
+          if (!m.sandbox.enabled) return ctx.ui.notify(`Sandbox: the session switch is already on, but ${m.label} does not sandbox`, "info");
+          return ctx.ui.notify("Sandbox is already on for this session", "info");
+        }
+        sandbox.sessionDisabled = wantOff;
+        updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
+        if (wantOff) {
+          const n = shellsRunning();
+          return ctx.ui.notify(
+            `Sandbox: OFF for this session in every mode — bash runs unsandboxed. The mode's permission prompts, file approvals and protected-path blocks still apply (${docRef("sandboxOff")}).` +
+              (n ? ` ${n} already running background shell(s) keep the sandbox they started under.` : "") +
+              " Run /sandbox on to re-enable it.",
+            "info",
+          );
+        }
+        if (sandbox.disabled) return ctx.ui.notify("Sandbox: still disabled via --no-sandbox (the session switch is cleared; restart pi without the flag to sandbox)", "info");
+        if (!m.sandbox.enabled) return ctx.ui.notify(`Sandbox: ON for this session, but ${m.label} does not sandbox (bash runs unsandboxed in this mode)`, "info");
+        if (!sandbox.ready) return ctx.ui.notify(`Sandbox: session switch is ON, but the sandbox is unavailable${sandbox.warn ? ` (${sandbox.warn})` : ""}; bash still asks first`, "warning");
+        const kept = shellsRunning();
+        return ctx.ui.notify(
+          `Sandbox: ON for this session — bash runs under ${m.label}'s OS sandbox again` +
+            (kept ? `; ${kept} background shell(s) keep the sandbox state they started with` : ""),
+          "info",
+        );
+      }
       if (sub === "install" || sub === "uninstall") {
         if (process.platform !== "win32") {
           return ctx.ui.notify(`permission-mode: /sandbox ${sub} is for the native Windows sandbox; see ${docRef("sandboxUnavailable")} for this platform`, "info");
@@ -1237,12 +1289,25 @@ export default async function (pi: ExtensionAPI) {
               updateStatus(ctx, currentMode(), sandbox, net.open); // the busy text goes, whichever way the install ended
             }
             ctx.ui.notify(`permission-mode: ${line}`, sandbox.ready ? "info" : "warning");
+            if (sub === "install" && sandbox.sessionDisabled) {
+              ctx.ui.notify("permission-mode: /sandbox off is still on; run /sandbox on to use the installed sandbox", "info");
+            }
           }
         } catch (e) {
           ctx.ui.notify(`permission-mode: Windows sandbox ${sub} failed: ${e instanceof Error ? e.message : String(e)}`, "error");
         }
         updateStatus(ctx, currentMode(), sandbox, net.open, { shellsRunning: shellsRunning() });
         return;
+      }
+      if (sandbox.sessionDisabled) {
+        return ctx.ui.notify(
+          [
+            `Sandbox: OFF for this session, in every mode (/sandbox on re-enables it)`,
+            `Mode: ${m.label}; bash runs unsandboxed, while the mode's permission prompts, file approvals and protected-path blocks still apply (${docRef("sandboxOff")}).`,
+            `Scratch dir: ${scratchDir ?? "(none)"}`,
+          ].join("\n"),
+          "info",
+        );
       }
       if (!m.sandbox.enabled) {
         return ctx.ui.notify(`${m.label}: sandbox disabled for this mode (bash runs unsandboxed)`, "info");
@@ -1334,10 +1399,14 @@ export default async function (pi: ExtensionAPI) {
     ...localBash,
     parameters: bashSchema as unknown as typeof localBash.parameters,
     async execute(id, params, signal, onUpdate, _ctx) {
-      const approved = approvedUnsandboxed.delete(id); // user granted an escape
+      const approved = approvedUnsandboxed.delete(id); // user granted an escape or "Allow Unsandboxed Once"
       const m = currentMode();
-      const plan = bashExecPlan(m.sandbox.enabled, m.sandbox.writable, sandbox.ready, approved);
-      if (m.sandbox.enabled && !approved && !plan.sandboxed) {
+      // `/sandbox off` is not a degraded runtime: it intentionally runs on the
+      // host. --no-sandbox still goes through the sandboxed plan (and its
+      // "sandbox unavailable" prompt), so readiness alone decides there.
+      const execSandbox = m.sandbox.enabled && !sandbox.sessionDisabled;
+      const plan = bashExecPlan(execSandbox, m.sandbox.writable, sandbox.ready, approved);
+      if (execSandbox && !approved && !plan.sandboxed) {
         // The gate allowed this call because the sandbox was ready; it isn't
         // any more (a failed profile switch, a re-init in flight). Never
         // degrade silently to an unsandboxed run: fail the call instead.
@@ -1550,7 +1619,7 @@ export default async function (pi: ExtensionAPI) {
       const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
       const { domains = [], reason = "" } = params as { domains?: string[]; reason?: string };
       const m = currentMode();
-      if (!sandbox.ready || !networkFiltered(m.sandbox) || net.open) {
+      if (!sandbox.ready || sandbox.sessionDisabled || !networkFiltered(m.sandbox) || net.open) {
         return text("Network is not filtered right now - no grant needed, just run the command.");
       }
       const normalized = [...new Set(domains.map(normalizeDomain).filter((d): d is string => d !== undefined))];
@@ -1569,10 +1638,19 @@ export default async function (pi: ExtensionAPI) {
       }
       const pctx = ctx ?? uiCtx;
       if (!pctx?.hasUI) return text("Denied: no interactive user available to approve network access.");
+      const networkOptions = ["Allow for session", "Allow forever", "Deny"];
+      if (typeof pctx.ui.input === "function") networkOptions.push("Deny for Reason");
       const choice = await pctx.ui.select(
         `Model requests network access to ${need.join(", ")} — ${reason.trim() || "no reason given"}. Allow?`,
-        ["Allow for session", "Allow forever", "Deny"],
+        networkOptions,
       );
+      if (choice === "Deny for Reason") {
+        const raw = typeof pctx.ui.input === "function" ? await pctx.ui.input("Why deny it? (the model is told this reason)", "e.g. use the internal mirror instead") : undefined;
+        const why = raw?.trim();
+        return text(
+          `Denied by the user: ${need.join(", ")}.${why ? ` The user's reason: ${why}` : ""} Don't retry these hosts — work within the allowlist or ask the user how to proceed.${rejectedNote}`,
+        );
+      }
       if (choice !== "Allow for session" && choice !== "Allow forever") {
         return text(
           `Denied by the user: ${need.join(", ")}. Don't retry these hosts — work within the allowlist or ask the user how to proceed.${rejectedNote}`,
@@ -1654,6 +1732,11 @@ export default async function (pi: ExtensionAPI) {
     // last fallback would ignore a configured defaultMode whenever the stock
     // one ("default") is also a valid mode.
     modeName = config.defaultMode;
+    // /sandbox off is session-scoped: a new session starts with the sandbox
+    // switch on. It is reset here (not in SandboxController.init) so a Windows
+    // /sandbox install, which re-runs init in this session, does not silently
+    // turn the switch back on.
+    sandbox.sessionDisabled = false;
     // Resolve the start mode BEFORE init so the sandbox initializes with the
     // right profile, then setMode reconciles status (applyProfile is a no-op).
     // A fresh pi process (or a harness that sends no reason) resolves from
@@ -1750,6 +1833,7 @@ export default async function (pi: ExtensionAPI) {
   });
   pi.on("session_shutdown", async (event, ctx) => {
     approvals.clearAll(); // session-scoped grants don't outlive the session
+    sandbox.sessionDisabled = false; // /sandbox off is session-scoped too
     blocked.clear(); // nor do "Deny and block" paths
     net.clear(); // network grants/denies and the open toggle are session-scoped too
     verdictCache.clear(); // Auto verdicts, the breaker and the list are session-scoped
@@ -1828,8 +1912,9 @@ export default async function (pi: ExtensionAPI) {
     // The effective profile carries the session's blocked paths in denyRead,
     // so the model sees them under "Reads are broadly allowed EXCEPT".
     const aware = sandboxAwarenessPrompt({ ...m, sandbox: effectiveSandbox(m) }, {
-      active: sandbox.ready && !sandbox.disabled,
+      active: sandbox.ready && !sandbox.disabled && !sandbox.sessionDisabled,
       reason: sandbox.disabled ? "disabled via --no-sandbox" : sandbox.warn,
+      sessionDisabled: sandbox.sessionDisabled,
       networkOpen: net.open,
       sessionDomains: net.grants(),
       shells: shells !== undefined && shellsCfg().enabled,
@@ -1921,22 +2006,53 @@ export default async function (pi: ExtensionAPI) {
       // ones (bash surface plus the path gate on every extracted command,
       // most restrictive across the chain): a whole-line match let
       // `cd x && sudo id` slip past `"sudo *"` and skipped the path gate
-      // entirely. Only escape detection is dropped - there is no sandbox to
-      // escape from. YOLO remains silent because its policy is `allow`; an
-      // unsandboxed `ask` mode must still prompt.
-      if (!m.sandbox.enabled) {
+      // entirely. A mode that never sandboxes drops escape detection - there
+      // is no sandbox to escape from. With `/sandbox off` the mode DOES have a
+      // profile and keeps its escape/external-directory gate (the command just
+      // runs on the host); only the containment is gone, not the approvals.
+      // YOLO remains silent because its policy is `allow`; an unsandboxed
+      // `ask` mode must still prompt.
+      if (!m.sandbox.enabled || sandbox.sessionDisabled) {
+        const sessionOff = m.sandbox.enabled; // entered here because /sandbox off, not because the mode lacks a sandbox
         const analysis = await analyzeBash(command, root, bashBounds);
         const decision =
           analysis.commands.length > 0 ? decideBashChainDetailed(m, analysis.commands) : decideDetailed(m, "bash", command);
-        const gate = bashGate(decision.action, undefined, false, sandbox.ready, decision.reason);
+        // With the session switch off, compose as a sandboxed mode would (so an
+        // escape still prompts per external_directory) but treat the sandbox as
+        // available: /sandbox off is a choice, not a degraded runtime.
+        const gate = sessionOff
+          ? bashGate(decision.action, analysis.outsideReason, true, true, decision.reason)
+          : bashGate(decision.action, undefined, false, sandbox.ready, decision.reason);
         if (gate.kind === "block") return { block: true, reason: gate.reason };
         if (gate.kind === "prompt") {
-          // Every approval here runs with full user rights, so a session grant
-          // stays scoped to the exact command string, never to command names.
-          const r = await promptAllow(ctx, "bash", command, askTitle(gate.title), undefined, undefined, {
-            action: { kind: "bash", command, outside: [], why: "the policy asks; bash runs unsandboxed in this mode" },
-            commands: analysis.commands,
-          });
+          // A mode that never sandboxes runs every approval with full user
+          // rights, so there a session grant stays scoped to the exact command
+          // string, never to command names. A `/sandbox off` session follows
+          // the sandboxed keying instead: names for a policy ask, the exact
+          // command for an escape.
+          const names = [...new Set(analysis.commands.map((c) => c.name).filter(Boolean))];
+          const keys = sessionOff && analysis.outsideReason ? [`escape:${command}`] : names.length > 0 ? names : [command];
+          const targets =
+            sessionOff && analysis.outsideReason?.startsWith("path outside project")
+              ? analysis.usedFallback
+                ? [escapeTargetFromReason(analysis.outsideReason, root)].filter((t): t is string => t !== undefined)
+                : escapingPaths(analysis.commands, root, bashBounds)
+              : [];
+          const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
+          if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
+          const why = sessionOff
+            ? (analysis.outsideReason ?? "the policy asks; the sandbox is off for this session")
+            : "the policy asks; bash runs unsandboxed in this mode";
+          const title = sessionOff ? `${gate.title} (sandbox off for this session)` : gate.title;
+          const r = await promptAllow(
+            ctx,
+            "bash",
+            sessionOff ? keys : command,
+            askTitle(title),
+            undefined,
+            sessionOff ? denyAndBlock(ctx, targets) : undefined,
+            { action: { kind: "bash", command, outside: targets.map((t) => canonicalPath(root, t)), why }, commands: analysis.commands },
+          );
           if (!r.allow) return { block: true, reason: r.reason ?? gate.reason };
           if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
         }
@@ -1977,10 +2093,24 @@ export default async function (pi: ExtensionAPI) {
         const hit = targets.map((t) => canonicalPath(root, t)).find((t) => blocked.covers(t));
         if (hit) return { block: true, reason: `Path ${displayPath(hit)} is blocked for this session (Deny and block); /perm unblock lifts it; see ${docRef("denyAndBlock")}` };
         const why = analysis.outsideReason ?? (sandbox.ready ? "the policy asks" : "sandbox unavailable");
-        const r = await promptAllow(ctx, "bash", keys, askTitle(gate.title), undefined, denyAndBlock(ctx, targets), {
-          action: { kind: "bash", command, outside: targets.map((t) => canonicalPath(root, t)), why },
-          commands: analysis.commands,
-        });
+        // In-project asks normally run sandboxed once approved; offer the
+        // escape hatch for a command the sandbox itself breaks (a system
+        // tool, git with a hook). Escapes and the degraded fallback already
+        // run unsandboxed, so they do not get a redundant option.
+        const offerUnsandboxedOnce = !gate.onApproveUnsandboxed && !sandbox.sessionDisabled && sandbox.ready;
+        const r = await promptAllow(
+          ctx,
+          "bash",
+          keys,
+          askTitle(gate.title),
+          undefined,
+          denyAndBlock(ctx, targets),
+          {
+            action: { kind: "bash", command, outside: targets.map((t) => canonicalPath(root, t)), why },
+            commands: analysis.commands,
+          },
+          offerUnsandboxedOnce ? () => void approvedUnsandboxed.add(event.toolCallId) : undefined,
+        );
         if (!r.allow) return { block: true, reason: r.reason ?? gate.reason };
         if (gate.onApproveUnsandboxed) approvedUnsandboxed.add(event.toolCallId);
       }

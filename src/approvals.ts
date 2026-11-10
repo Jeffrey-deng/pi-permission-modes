@@ -89,12 +89,16 @@ export interface DenyOption {
 export interface ApprovalUI {
   hasUI: boolean;
   select(title: string, options: string[]): Promise<string | undefined>;
+  /** Free-text reason for "Deny for Reason"; absent only on a UI that cannot ask. */
+  input?(title: string, placeholder?: string): Promise<string | undefined>;
 }
 
 const ALLOW_ONCE = "Allow once";
 const ALLOW_SESSION = "Allow for session";
+const ALLOW_UNSANDBOXED_ONCE = "Allow Unsandboxed Once";
 const ALLOW_FOREVER = "Allow forever";
 const DENY = "Deny";
+const DENY_FOR_REASON = "Deny for Reason";
 
 /**
  * Prompt for approval, honoring prior "Allow for session" grants. Returns true
@@ -107,9 +111,21 @@ const DENY = "Deny";
  * ALL targets, so re-running the exact same approved chain passes silently.
  * An empty list never auto-allows.
  *
- * When `onForever` is provided, a fourth "Allow forever" option appears; choosing
+ * When `onForever` is provided, an "Allow forever" option appears after the
+ * allow options; choosing
  * it records the session grant AND invokes `onForever` (which persists the rule
  * to the user's config). Used for first-seen extension tools / skills.
+ *
+ * When `onUnsandboxedOnce` is provided, an "Allow Unsandboxed Once" option
+ * appears right after "Allow for session": it allows the call WITHOUT a
+ * session grant and invokes the callback, which marks this one tool call to
+ * run outside the OS sandbox. Only bash asks pass it (the only tool the OS
+ * sandbox wraps); file tools and extension tools are policy-gated already.
+ *
+ * When `onDenyReason` is provided (and the UI can ask for text), a "Deny for
+ * Reason" option appears after "Deny": the user types why, the callback gets
+ * the text, and the call is denied. The reason reaches the model in the tool
+ * result instead of it guessing why.
  */
 /**
  * The reason a tool call reports after the user picked Deny. It names the
@@ -118,6 +134,11 @@ const DENY = "Deny";
  */
 export function deniedByUser(what: string): string {
   return `The user denied this ${what}. Do not retry or rephrase it; if the step matters, ask the user how to proceed.`;
+}
+
+/** The same decision, with the reason the user typed ("Deny for Reason"). */
+export function deniedByUserWithReason(reason: string): string {
+  return `The user denied this request and gave this reason: ${reason}\nDo not retry or rephrase it; if the step matters, follow the user's reason and ask if it is unclear.`;
 }
 
 export async function askWithSession(
@@ -129,18 +150,34 @@ export async function askWithSession(
   title: string,
   onForever?: () => void | Promise<void>,
   denyAnd?: DenyOption,
+  onUnsandboxedOnce?: () => void | Promise<void>,
+  onDenyReason?: (reason: string) => void | Promise<void>,
 ): Promise<boolean> {
   if (!ui.hasUI) return false; // no way to confirm → deny
   const targets = Array.isArray(target) ? target : [target];
   // Already granted this session - every target must be covered.
   if (targets.length > 0 && targets.every((t) => approvals.has(mode, surface, t))) return true;
 
-  const options = onForever ? [ALLOW_ONCE, ALLOW_SESSION, ALLOW_FOREVER, DENY] : [ALLOW_ONCE, ALLOW_SESSION, DENY];
+  const options = [ALLOW_ONCE, ALLOW_SESSION];
+  if (onUnsandboxedOnce) options.push(ALLOW_UNSANDBOXED_ONCE);
+  if (onForever) options.push(ALLOW_FOREVER);
+  options.push(DENY);
+  if (onDenyReason && ui.input) options.push(DENY_FOR_REASON);
   if (denyAnd) options.push(denyAnd.label); // "Deny and block … for this session"
   const choice = await ui.select(title, options);
   if (denyAnd && choice === denyAnd.label) {
     await denyAnd.run();
     return false;
+  }
+  if (choice === DENY_FOR_REASON && onDenyReason && ui.input) {
+    const raw = await ui.input("Why deny it? (the model is told this reason)", "e.g. use the staging database instead");
+    const reason = raw?.trim();
+    if (reason) await onDenyReason(reason);
+    return false; // an empty or cancelled input stays a plain denial
+  }
+  if (choice === ALLOW_UNSANDBOXED_ONCE && onUnsandboxedOnce) {
+    await onUnsandboxedOnce();
+    return true; // this call only: no session grant
   }
   if (choice === ALLOW_FOREVER) {
     for (const t of targets) approvals.remember(mode, surface, t); // cover the rest of this session immediately

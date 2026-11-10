@@ -56,7 +56,7 @@ type OnError = (message: string) => void;
 const noop: OnError = () => {};
 
 /** `$schema` URL written into files this extension creates (/perm init, "Allow forever"). */
-export const SCHEMA_URL = "https://raw.githubusercontent.com/wynainfo/pi-permission-modes/main/schemas/permission-mode.schema.json";
+export const SCHEMA_URL = "https://raw.githubusercontent.com/Jeffrey-deng/pi-permission-modes/main/schemas/permission-mode.schema.json";
 
 /** A project config larger than this is ignored (a FIFO or a giant file must not stall the loader). */
 const MAX_CONFIG_BYTES = 1 << 20;

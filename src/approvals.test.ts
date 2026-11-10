@@ -115,6 +115,57 @@ test("askWithSession: 'Allow forever' option only appears with onForever, and pe
   assert.equal(a.has("default", "tool", "foo"), true); // also covers the session
 });
 
+test("askWithSession: 'Allow Unsandboxed Once' is offered after the session option, allows this call only, and does not grant the session", async () => {
+  const a = new SessionApprovals();
+  let seen: string[] = [];
+  let once = 0;
+  const u: ApprovalUI = {
+    hasUI: true,
+    async select(_t, o) {
+      seen = o;
+      return "Allow Unsandboxed Once";
+    },
+  };
+  assert.equal(await askWithSession(u, a, "default", "bash", "ls", "?", undefined, undefined, () => void once++), true);
+  assert.equal(seen.indexOf("Allow Unsandboxed Once"), seen.indexOf("Allow for session") + 1);
+  assert.equal(once, 1);
+  assert.equal(a.has("default", "bash", "ls"), false, "one call only, no session grant");
+});
+
+test("askWithSession: 'Deny for Reason' asks for the user's text and hands it to the caller", async () => {
+  const a = new SessionApprovals();
+  let seen: string[] = [];
+  let asked = "";
+  let reason: string | undefined;
+  const u: ApprovalUI = {
+    hasUI: true,
+    async select(_t, o) {
+      seen = o;
+      return "Deny for Reason";
+    },
+    async input(title) {
+      asked = title;
+      return "  use the staging database instead  ";
+    },
+  };
+  const ok = await askWithSession(u, a, "default", "bash", "psql", "?", undefined, undefined, undefined, (r) => void (reason = r));
+  assert.equal(ok, false);
+  assert.deepEqual(seen, ["Allow once", "Allow for session", "Deny", "Deny for Reason"]);
+  assert.match(asked, /Why deny it\?/);
+  assert.equal(reason, "use the staging database instead");
+  assert.equal(a.has("default", "bash", "psql"), false);
+
+  // An empty or cancelled input stays a plain Deny: no reason reaches the caller.
+  reason = undefined;
+  const empty: ApprovalUI = {
+    hasUI: true,
+    select: async () => "Deny for Reason",
+    input: async () => "   ",
+  };
+  assert.equal(await askWithSession(empty, a, "default", "bash", "psql", "?", undefined, undefined, undefined, (r) => void (reason = r)), false);
+  assert.equal(reason, undefined);
+});
+
 test("BlockedPaths: covers the path and everything under a blocked directory", () => {
   const b = new BlockedPaths();
   b.add("/home/u/secret.txt");

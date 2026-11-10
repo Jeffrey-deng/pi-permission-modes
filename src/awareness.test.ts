@@ -259,6 +259,19 @@ test("degraded: short note with the reason, no boundary bullets", () => {
   assert.match(bare ?? "", /unavailable here\.\n/);
 });
 
+test("/sandbox off: a short session note, no sandbox boundary bullets", () => {
+  const out = sandboxAwarenessPrompt(mode(), { active: false, sessionDisabled: true, scratchDir: "/tmp/pi/sess-1" });
+  assert.ok(out);
+  assert.match(out, /^## Sandbox & permissions \(Default\)\n/);
+  assert.match(out, /OS sandbox is OFF for this session \(\/sandbox off\), in every mode/);
+  assert.match(out, /permission prompts still apply/);
+  assert.match(out, /network is not filtered/);
+  assert.match(out, /returns with \/sandbox on/);
+  assert.doesNotMatch(out, /Writable paths:/);
+  assert.doesNotMatch(out, /unavailable here/);
+  assert.match(out, /scratch directory: \/tmp\/pi\/sess-1/);
+});
+
 test("win32: the Windows lines name the account, what is readable, the denies and the revocation workaround; the Linux read lines are replaced", () => {
   const home = sandboxAwarenessPrompt(mode({}, { allowRead: ["~"] }), { active: true, platform: "win32" })!;
   assert.match(home, /native Windows sandbox: commands run in Git Bash as a separate local account \(srt-sandbox\)\. Readable: the project, Windows and Program Files, your user profile \(~\), EXCEPT ~\/\.ssh, ~\/\.aws, ~\/\.gnupg\./);

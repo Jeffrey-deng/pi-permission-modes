@@ -21,7 +21,7 @@ import { networkFiltered, type SandboxController } from "./sandbox.ts";
 export function updateStatus(
   ctx: Pick<ExtensionContext, "ui">,
   mode: ModeDef,
-  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean; pendingProfile?: unknown },
+  sandbox: Pick<SandboxController, "ready" | "warn" | "disabled"> & { switching?: boolean; pendingProfile?: unknown; sessionDisabled?: boolean },
   networkOpen: boolean,
   extra: {
     /** A long-running sandbox step in flight (the Windows install and its profile grant), with its elapsed time; shown instead of the warn. */
@@ -34,17 +34,19 @@ export function updateStatus(
 ): void {
   const { busy, shellsRunning = 0, judging = false } = extra;
   const t = ctx.ui.theme;
-  const enforcing = mode.sandbox.enabled && sandbox.ready;
+  const off = sandbox.sessionDisabled === true;
+  const enforcing = mode.sandbox.enabled && sandbox.ready && !off;
   let status = t.fg(mode.color, mode.label);
   // A profile switch in flight (the runtime re-initializes; on Windows it
   // re-stamps permission entries over the project) is marked: the mode has
   // changed, the sandbox follows in a moment.
   if (judging) status += " " + t.fg("warning", "(judging...)");
   else if (busy) status += " " + t.fg("warning", `(sandbox: ${busy})`);
+  else if (mode.sandbox.enabled && off) status += " " + t.fg("warning", "(sandbox off for this session, alt+m)");
   else if (enforcing && sandbox.pendingProfile) status += " " + t.fg("warning", `(sandbox profile pending: ${shellsRunning} shell(s))`);
   else if (enforcing && sandbox.switching) status += " " + t.fg("warning", "(applying sandbox profile...)");
   else status += " " + t.fg("dim", enforcing ? "(sandboxed in project dir, alt+m)" : "(alt+m)");
-  if (!busy && mode.sandbox.enabled && sandbox.warn && !sandbox.disabled) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
+  if (!busy && mode.sandbox.enabled && sandbox.warn && !sandbox.disabled && !off) status += " " + t.fg("error", `(!) ${sandbox.warn}`);
   if (enforcing && networkFiltered(mode.sandbox)) {
     status +=
       "  " + (networkOpen ? t.fg("warning", "Network: open (alt+n)") : t.fg("success", "Network: filtered (alt+n)"));

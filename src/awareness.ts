@@ -60,6 +60,8 @@ export interface AwarenessOptions {
   active: boolean;
   /** Why it isn't, when a sandboxed mode runs degraded (warn text / --no-sandbox). */
   reason?: string;
+  /** `/sandbox off`: OS sandboxing is disabled on purpose for this session, in every mode. */
+  sessionDisabled?: boolean;
   /** `/net open` / alt+n: domain filtering suspended for this session. */
   networkOpen?: boolean;
   /** Session-granted domains (via prompts, /net allow, request_network_access). */
@@ -139,6 +141,17 @@ export function sandboxAwarenessPrompt(mode: ModeDef, opts: AwarenessOptions): s
   const header = `## Sandbox & permissions (${mode.label})`;
 
   if (!opts.active) {
+    if (opts.sessionDisabled) {
+      const lines = [
+        header,
+        "",
+        "The OS sandbox is OFF for this session (/sandbox off), in every mode: bash runs with full user permissions and the network is not filtered.",
+        "The mode's permission prompts still apply, as do the file-tool policy and the protected-path block; commands beyond the project boundary are fine to issue and the user is asked automatically.",
+        "The mode's sandbox profile returns with /sandbox on.",
+      ];
+      if (opts.scratchDir) lines.push("", scratchSentence(opts.scratchDir));
+      return lines.join("\n");
+    }
     const lines = [
       header,
       "",

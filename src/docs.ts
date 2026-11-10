@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 export const DOC_REFS = {
   namespaces: "troubleshooting.md#bubblewrap-namespaces",
   sandboxUnavailable: "troubleshooting.md#sandbox-unavailable",
+  sandboxOff: "sandbox.md#session-sandbox-switch",
   silentFailures: "troubleshooting.md#silent-failures-inside-the-sandbox",
   sshInSandbox: "troubleshooting.md#ssh-in-the-sandbox",
   blockedByPolicy: "troubleshooting.md#blocked-by-policy",

@@ -964,6 +964,14 @@ export class SandboxController {
   private lastInit: InitOptions | undefined;
   ready = false;
   disabled = false;
+  /**
+   * `/sandbox off`: run bash on the host in EVERY mode for the rest of this
+   * session, whatever a mode's `sandbox.enabled` says. The runtime stays
+   * initialized (no re-init on `/sandbox on`); `bashOps` returns null, so no
+   * command is wrapped. Session-scoped: session_start and session_shutdown
+   * clear it, while `init` keeps it (a Windows install re-runs init).
+   */
+  sessionDisabled = false;
   warn: string | undefined;
   /** Non-fatal findings of the runtime's dependency check (shown once, listed by /sandbox). */
   dependencyWarnings: string[] = [];
@@ -1067,6 +1075,7 @@ export class SandboxController {
    * the operations refuse to run rather than run with the wrong grants.
    */
   bashOps(opts: BashOpsOptions = {}): SandboxedBashOps | null {
+    if (this.sessionDisabled) return null;
     if (!this.manager || !this.profile) return null;
     if (this.win) {
       if (Boolean(opts.readOnly) !== this.win.readOnly) {

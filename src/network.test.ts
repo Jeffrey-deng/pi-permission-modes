@@ -145,12 +145,14 @@ test("promptNote: one line per answered prompt, nothing without one", () => {
     { host: "example.com", result: "allow-session" },
     { host: "cdn.example.com", result: "allow-forever" },
     { host: "evil.io", result: "deny" },
+    { host: "reason.io", result: "deny", reason: "use the internal mirror" },
     { host: "late.io", result: "dismiss" },
   ]);
   assert.match(note, /^<sandbox_network>\n/);
   assert.match(note, /the user was asked and allowed example\.com for this session\n/);
   assert.match(note, /allowed cdn\.example\.com for this mode permanently\n/);
   assert.match(note, /denied evil\.io for this session: do not retry it, ask the user if it is needed\n/);
+  assert.match(note, /denied reason\.io for this session \(reason: use the internal mirror\): do not retry it/);
   assert.match(note, /dismissed the prompt for late\.io: this connection was denied, a retry asks again\n<\/sandbox_network>$/);
 });
 
