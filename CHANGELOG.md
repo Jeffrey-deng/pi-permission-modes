@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0]
+
 ### Added
 - **`/sandbox off` and `/sandbox on`.** A session-wide kill switch for OS
   sandboxing: while off, every mode runs bash on the host, and the mode's
